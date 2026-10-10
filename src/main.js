@@ -2,12 +2,12 @@
 // This file's version, and the evidence formats it reads. Every release reads every earlier format, so an
 // older record verifies with any newer verifier; a record in a newer format is reported as such.
 const VERIFIER = {
-  version: "1.2.0",
-  formats: { agreement: [1, 2, 3], receipt: [1], certificate: [1], card: [1], proof: [1] },
+  version: "1.3.0",
+  formats: { agreement: [1, 2, 3], receipt: [1], certificate: [1], card: [1], proof: [1], analytics: [1] },
   repo: "https://github.com/DataHubz/attest-verifier",
   latest: ["https://attest.datahubz.com/attest-verifier/latest.json", "https://raw.githubusercontent.com/DataHubz/attest-verifier/main/latest.json"],
 };
-const KINDS = { agreement: "Signed agreement", receipt: "Receipt", certificate: "Certificate", card: "Proof Card", proof: "Zero-knowledge proof" };
+const KINDS = { agreement: "Signed agreement", receipt: "Receipt", certificate: "Certificate", card: "Proof Card", proof: "Zero-knowledge proof", analytics: "Attest Analytics" };
 const L = window.AttestLibs;
 const $ = (id) => document.getElementById(id);
 const enc = new TextEncoder(), dec = new TextDecoder();
@@ -220,6 +220,7 @@ const headline = {
   certificate: "Verified: the content, every signature, the issuer's signature and key, and the anchor on the public blockchain.",
   card: "Verified: the issuer's signature and key, the holder's approval, the anchors and the current status on the public blockchain.",
   proof: "Verified: the zero-knowledge proof, what it reveals, and the anchored record it proves against.",
+  analytics: "Verified: the sealed figures, the records behind them, and their anchors on the public blockchain.",
 };
 function render(kind, title, sub) {
   const failed = results.some((r) => r.state === "bad");
@@ -237,7 +238,7 @@ function render(kind, title, sub) {
 
 /** The evidence's kind and format version, or null if it isn't Attest evidence. */
 function formatOf(ev) {
-  const m = ev && typeof ev.format === "string" && /^attest\.(agreement|receipt|certificate|card|proof)_evidence\.v(\d+)$/.exec(ev.format);
+  const m = ev && typeof ev.format === "string" && /^attest\.(agreement|receipt|certificate|card|proof|analytics)_evidence\.v(\d+)$/.exec(ev.format);
   if (m) return { kind: m[1], v: Number(m[2]) };
   const other = ev && typeof ev.format === "string" && /^attest\.([a-z_]+)\.v(\d+)$/.exec(ev.format);
   return other ? { kind: other[1], v: Number(other[2]), unknown: true } : null;
@@ -604,6 +605,94 @@ async function verifyProof(ev) {
   render("proof", p.statement, `${esc(p.id)} · ${esc(p.circuit)} · reveals only the names shown and the completion day`);
 }
 
+// ============================================================================================= analytics
+const FIGURE_LABELS = { newAccounts: "New accounts", sent: "Documents sent", completed: "Documents completed", signatures: "Passkey signatures", proofsShared: "Proofs shared", anchors: "Anchors on Horizen" };
+
+/** A Merkle root over leaves sorted by value: SHA-256 of sorted pairs, an odd node promoted (as Attest's trees). */
+async function rootOfLeaves(leaves) {
+  if (!leaves.length) return null;
+  let level = [...leaves].map((x) => x.toLowerCase()).sort();
+  while (level.length > 1) {
+    const next = [];
+    for (let i = 0; i < level.length; i += 2) {
+      if (i + 1 === level.length) { next.push(level[i]); continue; }
+      const [a, b] = level[i] < level[i + 1] ? [level[i], level[i + 1]] : [level[i + 1], level[i]];
+      const both = new Uint8Array(64); both.set(unhex(a)); both.set(unhex(b), 32);
+      next.push(await sha256hex(both));
+    }
+    level = next;
+  }
+  return level[0];
+}
+
+/**
+ * Sealed daily figures (attest.analytics_evidence.v1): each snapshot's anchored summary names its figures and its
+ * commitments (a Merkle root per figure over the records it counted) by SHA-256. Full evidence carries every
+ * figure's leaves, to recount; inclusion evidence carries a party's own salted records and paths.
+ */
+async function verifyAnalytics(ev) {
+  const days = [];
+  for (const s of ev.snapshots || []) {
+    days.push(s.day);
+    const label = `${s.day} (${s.scope})`;
+    const h = await sha256hex(s.canonical);
+    if (h !== s.sha256) { add("bad", `${label}: the sealed summary doesn't match its fingerprint`, ""); continue; }
+    let content = null; try { content = JSON.parse(s.canonical); } catch {}
+    await checkAnchor(`${label}: the sealed summary`, s.anchor, s.sha256, ev.chain);
+    if (!content || content.format !== "attest.analytics_snapshot.v2") {
+      add("warn", `${label}: sealed before records were committed`, "Its figures are anchored as they were sealed, but not tied to the records behind them (snapshot format v1).");
+      continue;
+    }
+    let commitments = null;
+    if (s.commitments) {
+      const ok = (await sha256hex(s.commitments)) === content.commitmentsSha256;
+      add(ok ? "ok" : "bad", `${label}: the commitments are the sealed ones`, "One Merkle root per figure, named by its SHA-256 in the anchored summary.");
+      if (ok) commitments = JSON.parse(s.commitments);
+    }
+    let figures = null;
+    if (s.figures) {
+      const ok = (await sha256hex(s.figures)) === content.figuresSha256;
+      add(ok ? "ok" : "bad", `${label}: the figures are the sealed ones`, "");
+      if (ok) figures = JSON.parse(s.figures);
+    }
+    // Full evidence: recount every figure from its leaves, and recompute every root.
+    if (s.leaves && commitments) {
+      for (const [f, leaves] of Object.entries(s.leaves)) {
+        const root = await rootOfLeaves(leaves);
+        const count = figures && figures.activity ? figures.activity[f] : null;
+        const rootOk = root === commitments[f];
+        const countOk = count == null || count === leaves.length;
+        add(rootOk && countOk ? "ok" : "bad", `${label}: ${FIGURE_LABELS[f] || f}: ${count != null ? count : leaves.length}`, rootOk && countOk ? `Recounted from ${leaves.length} committed record${leaves.length === 1 ? "" : "s"}; their Merkle root matches the sealed one.` : `${leaves.length} records, root ${mono(root || "none")}: they don't match the sealed figure and root.`);
+      }
+      // Anchors are public: each committed transaction must be an anchor on the registry, mined that day.
+      const txs = (s.leaves.anchors || []).map((x) => "0x" + x);
+      const url = nodeUrl(ev.chain && ev.chain.rpc);
+      if (txs.length && url) {
+        let good = 0, bad = 0;
+        for (const tx of txs) {
+          try {
+            const rc = await rpc(url, "eth_getTransactionReceipt", [tx]);
+            const log = rc && rc.status === "0x1" && rc.logs.find((l) => !ev.chain.contract || l.address.toLowerCase() === ev.chain.contract.toLowerCase());
+            if (!log) { bad++; continue; }
+            const block = await rpc(url, "eth_getBlockByNumber", [rc.blockNumber, false]);
+            if (new Date(parseInt(block.timestamp, 16) * 1000).toISOString().slice(0, 10) === s.day) good++; else bad++;
+          } catch { bad++; }
+        }
+        add(bad ? "bad" : "ok", `${label}: each committed anchor is on chain, that day`, `${good} of ${txs.length} transactions read from the chain${bad ? `; ${bad} don't check out` : ""}.`);
+      }
+    }
+    // Inclusion: the party's own records, salted, with their paths to the sealed roots.
+    for (const p of s.inclusion || []) {
+      const leaf = await sha256hex(`attest.analytics.leaf.v1|${p.figure}|${p.record.id}|${p.salt}`);
+      const root = leaf === p.leaf ? await foldPath(leaf, p.path) : null;
+      const ok = commitments && root === commitments[p.figure];
+      add(ok ? "ok" : "bad", ok ? `Counted in ${FIGURE_LABELS[p.figure] || p.figure}, ${s.day}` : `Not shown to be counted in ${FIGURE_LABELS[p.figure] || p.figure}, ${s.day}`, `Your ${esc(p.record.kind)} ${mono(p.record.id)}: its salted leaf reaches the sealed root in ${p.path.length} step${p.path.length === 1 ? "" : "s"}.`);
+    }
+  }
+  if (!days.length) add("warn", "No sealed days in this file", "");
+  render("analytics", "Attest Analytics", `Sealed ${esc(days.join(", "))}`);
+}
+
 // =================================================================================================== input
 async function verify(ev, files) {
   results = [];
@@ -627,6 +716,7 @@ async function verify(ev, files) {
     if (f.kind === "certificate") return await verifyCertificate(ev, files);
     if (f.kind === "card") return await verifyCard(ev);
     if (f.kind === "proof") return await verifyProof(ev);
+    if (f.kind === "analytics") return await verifyAnalytics(ev);
   } catch (e) {
     add("bad", "The check stopped with an error", esc(e.message));
     render(f.kind);
