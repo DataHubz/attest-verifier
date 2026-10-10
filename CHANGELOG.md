@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.0 (2026-10-10)
+
+- Signed copies (evidence v3) authenticate their visible pages: the verifier hashes the PDF's pages, which come before the evidence (a PDF incremental update), and checks that exact hash is anchored as the agreement's signed copy by the wallet that anchored its signed state. Pages that were changed, or rebuilt around the same attachments, fail.
+- Copies in evidence v1 and v2 say plainly that their visible pages are not covered, and how to check them.
+- "The original document inside is exactly the one signed" replaces "The document is exactly the one signed", which could be read as covering the visible pages.
+
+Affected versions: 1.0.0 and 1.1.0 report a PDF whose visible pages were altered, with its attachments intact, as verified: they authenticate the attachments only. Use 1.2.0.
+
 ## 1.1.0 (2026-10-10)
 
 Reads every Attest record: signed agreements (v1, v2), receipts, certificates, Proof Cards and agreement proofs (v1 each).

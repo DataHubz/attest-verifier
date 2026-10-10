@@ -1,8 +1,8 @@
 {
-  "version": "1.1.0",
+  "version": "1.2.0",
   "released": "2026-10-10",
-  "formats": { "agreement": [1, 2], "receipt": [1], "certificate": [1], "card": [1], "proof": [1] },
-  "sha256": "31c5ab442567ca0edd90050efa159afa4932d01348d28e9cdcfd64665f9c85c6",
-  "url": "https://attest.datahubz.com/attest-verifier/1.1.0.html",
-  "source": "https://github.com/DataHubz/attest-verifier/releases/tag/v1.1.0"
+  "formats": { "agreement": [1, 2, 3], "receipt": [1], "certificate": [1], "card": [1], "proof": [1] },
+  "sha256": "9247999841a03dea2edcb7d5acb44a8a7be842326c05b0b92f47be9a9fb8bd07",
+  "url": "https://attest.datahubz.com/attest-verifier/1.2.0.html",
+  "source": "https://github.com/DataHubz/attest-verifier/releases/tag/v1.2.0"
 }
