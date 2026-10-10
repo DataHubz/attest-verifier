@@ -1,27 +1,40 @@
 # Attest verifier
 
-A standalone verifier for documents signed with [Attest](https://attest.datahubz.com). It checks a signed copy on your own device, using open standards and a public blockchain, with no Attest service involved.
+A standalone verifier for [Attest](https://attest.datahubz.com) records: signed agreements, receipts, certificates, Proof Cards and zero-knowledge proofs. It checks a record on your own device, using open standards and a public blockchain, with no Attest service involved.
 
-Every Attest signed copy carries this verifier as an attachment, together with the original document and the evidence. This repository is its source and release history.
+Every Attest signed copy carries this verifier as an attachment, together with the original document and the evidence. Every other record has an evidence file on its page. This repository is the verifier's source and release history.
 
 ## What it checks
 
-- The original document is exactly the one every signer signed (SHA-256).
-- Each signer's entries match what they signed.
-- Each signer's passkey signature (WebAuthn): the statement it signed names the document and the entries, it was made on Attest, with the user present and verified.
-- The signed state covers the document and every signer, and its fingerprint is a leaf of the Merkle tree whose root was anchored.
-- The anchoring transaction on Horizen records that root, read from a public node.
-- Zero-knowledge proofs carry their Groth16 verification keys, for any Groth16 verifier.
+- **Signed agreements:** the original document; each signer's entries and passkey signature (WebAuthn); the signed state covering the document and every signer; its inclusion in the anchored Merkle root; the anchoring transaction; zero-knowledge proofs about the agreement.
+- **Receipts:** a file against its recorded fingerprint; the Merkle path to the anchored root; the transaction. For scan proofs, the Groth16 proof and its binding to the receipt.
+- **Certificates:** the content; each signer's passkey signature; the issuer's signature (W3C Verifiable Credential, JOSE); the issuer's key as committed on chain by the organization's wallet; the PDF; the anchor from that same wallet; revocation, read from the chain; the findings-closure proof.
+- **Proof Cards:** the holder's passkey approval of the exact copy shared; the issuer's selective-disclosure signature (W3C Data Integrity, ecdsa-sd-2023); the issuer's key on chain; the signed status lists and their anchors; the issuance anchor; the current status, read from the chain.
+- **Agreement proofs:** the Groth16 proof; the people and completion day it reveals; the anchored root it proves against.
 
-The exact format and each check are specified in [FORMAT.md](FORMAT.md), so the checks can be reimplemented in any language.
+Each format and check is specified in [FORMAT.md](FORMAT.md), so the checks can be reimplemented in any language.
 
 ## Use
 
 1. Download `attest-verifier.html` from the latest release, or save the copy attached to a signed PDF (any PDF reader lists its attachments).
-2. Open it in a current browser. It works from disk, offline, except the on-chain check, which reads one transaction from a public node of the anchor's chain. The node address can be changed on the page.
-3. Drop the signed PDF on it. Alternatively, drop `attest-evidence.json` together with `original-document.pdf`.
+2. Open it in a current browser. It works from disk, offline, except the on-chain checks, which read from a public node of the record's chain. A node can be entered on the page.
+3. Drop a signed PDF, or an evidence file (`attest-evidence-….json`) downloaded from a record's page. Add the original file or the certificate PDF to check it too.
 
-The page makes no requests besides that on-chain read, and the opt-in "Check for a newer version" button, which reads the release manifest from attest.datahubz.com or this repository.
+The page makes no requests besides those on-chain reads, and the opt-in "Check for a newer version" button, which reads the release manifest from attest.datahubz.com or this repository.
+
+## What the verifier carries itself
+
+The libraries it uses are bundled into the file at build time, from the exact versions in `package-lock.json`: W3C Verifiable Credentials and Data Integrity (Digital Bazaar), snarkjs (Groth16), cborg. It also carries the JSON-LD contexts the records use, including the Attest cards context, and never takes a context from an evidence file: a substituted context could change what a credential's fields mean while its signature still verifies. Each Attest context's fingerprint is anchored on chain, and the verifier checks it.
+
+## Build it yourself
+
+```
+npm ci
+npm run build
+shasum -a 256 attest-verifier.html
+```
+
+The build is reproducible: the same sources and lockfile produce the same bytes, so the fingerprint matches the release's.
 
 ## Versions and compatibility
 
@@ -32,7 +45,7 @@ The page makes no requests besides that on-chain read, and the opt-in "Check for
 
 ## Authenticity of releases
 
-Each release lists the SHA-256 of `attest-verifier.html`. That fingerprint is also recorded as an Attest receipt anchored on Horizen: drop the downloaded file on [attest.datahubz.com/verify](https://attest.datahubz.com/verify) to confirm it is the published release.
+Each release lists the SHA-256 of `attest-verifier.html`. That fingerprint is also recorded as an Attest receipt anchored on Horizen: drop the downloaded file on [attest.datahubz.com/verify](https://attest.datahubz.com/verify) to confirm it is the published release, or rebuild it from source.
 
 ## Security
 
@@ -40,4 +53,4 @@ Report vulnerabilities to contact@datahubz.com. Fixes are published as new relea
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE). Bundled libraries keep their own licenses, listed at the end of the built file.
