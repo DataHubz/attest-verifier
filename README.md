@@ -11,6 +11,7 @@ Every Attest signed copy carries this verifier as an attachment, together with t
 - **Certificates:** the content; each signer's passkey signature; the issuer's signature (W3C Verifiable Credential, JOSE); the issuer's key as committed on chain by the organization's wallet; the PDF; the anchor from that same wallet; revocation, read from the chain; the findings-closure proof.
 - **Proof Cards:** the holder's passkey approval of the exact copy shared; the issuer's selective-disclosure signature (W3C Data Integrity, ecdsa-sd-2023); the issuer's key on chain; the signed status lists and their anchors; the issuance anchor; the current status, read from the chain.
 - **Agreement proofs:** the Groth16 proof; the people and completion day it reveals; the anchored root it proves against.
+- **Attest Analytics:** each sealed day's figures and summary as anchored; every figure recounted from the records it committed to, every root recomputed, every anchor read from the chain; or, for a party, that their agreement and signature are counted. The method is in [ANALYTICS.md](ANALYTICS.md).
 
 Each format and check is specified in [FORMAT.md](FORMAT.md), so the checks can be reimplemented in any language.
 

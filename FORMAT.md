@@ -9,6 +9,7 @@ Every Attest record can be checked without Attest: its evidence holds everything
 | `attest.certificate_evidence.v1` | Certificate | `/api/evidence/<cert_ id>`, the certificate's page |
 | `attest.card_evidence.v1` | Shared Proof Card | `/api/evidence/<shr_ id>`, the shared card's page |
 | `attest.proof_evidence.v1` | Agreement proof | `/api/evidence/<azk_ id>`, the proof's page |
+| `attest.analytics_evidence.v1` | Sealed Analytics days | The Analytics dashboard (full), or a completed agreement (inclusion) |
 
 Common definitions:
 
@@ -211,6 +212,25 @@ Public signals: `agreement_membership` is `[root, emailField(party), day, identi
 2. **What it reveals.** The email fields, the day and the salt match the public signals.
 3. **Root.** `isAnchored(root)`: the root commits to every completed agreement on Attest.
 4. **zkVerify.** The proof is also verified on zkVerify (`zkverify.txHash`).
+
+# Analytics (`attest.analytics_evidence.v1`)
+
+The method and each figure's definition are in [ANALYTICS.md](ANALYTICS.md).
+
+```
+snapshots[]          id, day, scope ("platform" or "organization"), canonical (the summary), sha256
+  figures            the figures document (full evidence only)
+  commitments        the commitments document
+  leaves             { figure: [leaf hashes] } (full evidence only)
+  inclusion[]        figure, record{kind, id}, salt, leaf, path (inclusion evidence only)
+  anchor             Merkle anchor of the summary's SHA-256
+chain                chainId, rpc, contract
+```
+
+1. `sha256(canonical) == sha256`, anchored.
+2. `sha256(commitments) == summary.commitmentsSha256`; `sha256(figures) == summary.figuresSha256`.
+3. Full: for each figure, the root of its leaves equals its commitment, and their number equals `figures.activity[figure]`; each anchor leaf is a transaction on the registry mined that day.
+4. Inclusion: `sha256("attest.analytics.leaf.v1|" + figure + "|" + record.id + "|" + salt) == leaf`, and folding `path` (sorted pairs) reaches `commitments[figure]`.
 
 ## Compatibility
 
