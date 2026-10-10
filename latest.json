@@ -1,0 +1,8 @@
+{
+  "version": "1.0.0",
+  "released": "2026-10-10",
+  "formats": [1, 2],
+  "sha256": "6f3cc93e90726c64a80fbcab4a5aad3860b4205ddddb23ef273c538fe448dfb1",
+  "url": "https://attest.datahubz.com/attest-verifier/1.0.0.html",
+  "source": "https://github.com/DataHubz/attest-verifier/releases/tag/v1.0.0"
+}
