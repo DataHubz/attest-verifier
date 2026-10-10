@@ -36,7 +36,7 @@ Each release lists the SHA-256 of `attest-verifier.html`. That fingerprint is al
 
 ## Security
 
-Report vulnerabilities to security@datahubz.com. Fixes are published as new releases with a note in [CHANGELOG.md](CHANGELOG.md) naming the affected versions.
+Report vulnerabilities to contact@datahubz.com. Fixes are published as new releases with a note in [CHANGELOG.md](CHANGELOG.md) naming the affected versions.
 
 ## License
 
