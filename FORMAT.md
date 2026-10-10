@@ -4,7 +4,7 @@ Every Attest record can be checked without Attest: its evidence holds everything
 
 | Format | Record | Where it comes from |
 | --- | --- | --- |
-| `attest.agreement_evidence.v1`, `v2` | Signed agreement | Attached to every signed PDF |
+| `attest.agreement_evidence.v1`, `v2`, `v3` | Signed agreement | Attached to every signed PDF |
 | `attest.receipt_evidence.v1` | Receipt, scan proof | `/api/evidence/<rcpt_ or zk_ id>`, the receipt's page |
 | `attest.certificate_evidence.v1` | Certificate | `/api/evidence/<cert_ id>`, the certificate's page |
 | `attest.card_evidence.v1` | Shared Proof Card | `/api/evidence/<shr_ id>`, the shared card's page |
@@ -30,6 +30,7 @@ Organizations anchor these from their own wallet, so a verifier asks the chain d
 | A certificate's revocation | `sha256("attest.certificate.revoked.v2|" + certificateId)` |
 | A Proof Card's n-th status change | `sha256("attest.card.status.v1|" + cardId + "|" + n + "|" + state)`, state `revoked`, `suspended` or `active`, n from 1 |
 | A published JSON-LD context | `sha256("attest.context.v1|" + url + "|" + canonicalJson(document))`, from Attest's platform organization |
+| A signed copy's visible pages | `sha256("attest.signed_copy.v1|" + agreementId + "|" + variant + "|" + sha256(visible bytes))`, variant `full` or `pages`, from the wallet that anchored the agreement's signed state |
 
 The wallet that anchored an organization's issuer key is that organization's wallet; certificates, revocations and status changes anchored by the same wallet are its own. The issuer key's anchor time shows when the key was public: a key substituted later carries a later time and a different value.
 
@@ -103,6 +104,22 @@ online              live certificate URL
 6. **Merkle path.** `node = SHA-256("<anchor.receiptId>:<signedState.sha256>")` (equals `anchor.leaf`). For each sibling in `anchor.merkleProof`: `node = SHA-256(min(node, sibling) || max(node, sibling))`, comparing the 32-byte values as lowercase hex strings and concatenating the bytes. The result equals `anchor.merkleRoot`. Batches with a single record have an empty path and `merkleRoot == leaf`.
 7. **On chain.** `eth_getTransactionReceipt(anchor.txHash)` from any node of `anchor.chainId` has status `0x1` and a log emitted by `anchor.contract` whose `data` begins with `anchor.merkleRoot` (the `RootAnchored` event). The block's timestamp is when it was sealed.
 8. **Zero-knowledge proofs.** `groth16 verify(verificationKey, publicSignals, proof)`, for example `npx snarkjs groth16 verify vk.json public.json proof.json`. Each proof is also verified on zkVerify (`zkverify.txHash`).
+
+## Format v3 (`attest.agreement_evidence.v3`)
+
+Signed copies made from 2026-10-10 (after verifier 1.2.0). Format v2 plus:
+
+```
+visibleCopy.variant      "full" (with certificate pages) or "pages" (signed pages only)
+visibleCopy.byteLength   length of the visible pages: the PDF's first bytes
+visibleCopy.sha256       SHA-256 of those bytes
+```
+
+The signed copy is the visible pages, saved with a classic cross-reference table, followed by a PDF incremental update (ISO 32000, 7.5.6) that adds the three attachments and a catalog naming them. The visible pages' bytes are never rewritten.
+
+9. **Visible pages.** `SHA-256(first visibleCopy.byteLength bytes of the PDF) == visibleCopy.sha256`, and `isAnchored(sha256("attest.signed_copy.v1|" + agreementId + "|" + variant + "|" + visibleCopy.sha256))` is true, from the wallet that sent `anchor.txHash`. A PDF whose pages were changed, or rebuilt around the same attachments, fails: its first bytes hash differently, and editing the evidence to match leaves a value that was never anchored.
+
+Copies in formats v1 and v2 authenticate the original document inside them, not their visible pages.
 
 ## Format v1 (`attest.agreement_evidence.v1`)
 

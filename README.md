@@ -6,7 +6,7 @@ Every Attest signed copy carries this verifier as an attachment, together with t
 
 ## What it checks
 
-- **Signed agreements:** the original document; each signer's entries and passkey signature (WebAuthn); the signed state covering the document and every signer; its inclusion in the anchored Merkle root; the anchoring transaction; zero-knowledge proofs about the agreement.
+- **Signed agreements:** the pages you see, anchored as the agreement's signed copy (copies made from October 10, 2026); the original document inside; each signer's entries and passkey signature (WebAuthn); the signed state covering the document and every signer; its inclusion in the anchored Merkle root; the anchoring transaction; zero-knowledge proofs about the agreement.
 - **Receipts:** a file against its recorded fingerprint; the Merkle path to the anchored root; the transaction. For scan proofs, the Groth16 proof and its binding to the receipt.
 - **Certificates:** the content; each signer's passkey signature; the issuer's signature (W3C Verifiable Credential, JOSE); the issuer's key as committed on chain by the organization's wallet; the PDF; the anchor from that same wallet; revocation, read from the chain; the findings-closure proof.
 - **Proof Cards:** the holder's passkey approval of the exact copy shared; the issuer's selective-disclosure signature (W3C Data Integrity, ecdsa-sd-2023); the issuer's key on chain; the signed status lists and their anchors; the issuance anchor; the current status, read from the chain.
