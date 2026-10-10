@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Attest verifier</title>
+<!--
+  Attest standalone verifier (format attest.agreement_evidence.v2). Open source, no dependencies, no Attest
+  service: it reads the evidence attached to an Attest signed copy and checks every step on this device,
+  using SHA-256 and WebAuthn signature checks built into the browser, and a public node of the chain the
+  agreement is anchored on. Save it anywhere and open it in any browser; it works offline except the
+  on-chain check.
+-->
+<style>
+  :root { --ink:#0a2540; --body:#425466; --muted:#697386; --line:#e3e8ee; --ok:#047857; --bad:#b91c1c; --warn:#b45309; --accent:#4f46e5; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; color: var(--body); background: #f6f9fc; }
+  main { max-width: 860px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { color: var(--ink); font-size: 26px; margin: 0 0 6px; }
+  h2 { color: var(--ink); font-size: 17px; margin: 28px 0 10px; }
+  p { margin: 6px 0; }
+  .drop { margin-top: 18px; border: 2px dashed #c7d2fe; border-radius: 14px; background: #fff; padding: 34px 20px; text-align: center; cursor: pointer; }
+  .drop.over { border-color: var(--accent); background: #eef2ff; }
+  .drop b { color: var(--ink); }
+  .card { background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin: 10px 0; }
+  .row { display: flex; gap: 10px; align-items: flex-start; padding: 6px 0; }
+  .row + .row { border-top: 1px solid #f0f3f7; }
+  .icon { flex: none; width: 22px; height: 22px; border-radius: 99px; color: #fff; font-weight: 700; font-size: 13px; display: flex; align-items: center; justify-content: center; margin-top: 1px; }
+  .ok { background: var(--ok); } .bad { background: var(--bad); } .warn { background: var(--warn); } .info { background: #94a3b8; }
+  .title { color: var(--ink); font-weight: 600; }
+  .detail { font-size: 13px; color: var(--muted); word-break: break-all; }
+  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+  .verdict { margin-top: 22px; padding: 16px 18px; border-radius: 12px; font-weight: 600; color: var(--ink); }
+  .verdict.ok { background: #ecfdf5; border: 1px solid #a7f3d0; }
+  .verdict.bad { background: #fef2f2; border: 1px solid #fecaca; }
+  input[type=text] { width: 100%; font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
+  label { font-size: 13px; color: var(--muted); }
+  button.link { font: inherit; color: var(--accent); background: none; border: 0; padding: 0; cursor: pointer; font-weight: 600; }
+  .small { font-size: 13px; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Attest verifier</h1>
+  <p>Checks an Attest signed copy on this device, with no Attest service: the document, every signer's passkey signature and entries, the signed state, and its anchor on a public blockchain.</p>
+  <p class="small"><span id="ver"></span> <button id="update" type="button" class="link">Check for a newer version</button> <span id="updateOut"></span></p>
+  <div id="drop" class="drop" tabindex="0">
+    <b>Drop the signed PDF here</b>, or click to choose it.<br>
+    <span class="small">You can also drop attest-evidence.json together with original-document.pdf. Nothing is uploaded.</span>
+    <input id="file" type="file" multiple accept=".pdf,.json,application/pdf,application/json" hidden>
+  </div>
+  <p style="margin-top:14px"><label for="rpc">Public node for the on-chain check (any node of the anchor's chain works):</label></p>
+  <input id="rpc" type="text" placeholder="read from the evidence">
+  <div id="out"></div>
+  <h2>How this works</h2>
+  <p class="small">Every fingerprint is SHA-256. Each signature is a WebAuthn (passkey) assertion over the SHA-256 of the signer's exact statement. The signed state's fingerprint is a leaf of a Merkle tree whose root was written to the chain by a transaction anyone can read. The evidence file lists every step in plain words under <code>checks</code>, so any SHA-256 tool, WebAuthn library and Ethereum node can repeat them.</p>
+</main>
+<script>
+"use strict";
+// This file's version, and the evidence formats it reads. Every release reads every earlier format, so an
+// older document verifies with any newer verifier; a document in a newer format is reported as such.
+const VERIFIER = {
+  version: "1.0.0",
+  formats: [1, 2],
+  repo: "https://github.com/DataHubz/attest-verifier",
+  latest: ["https://attest.datahubz.com/attest-verifier/latest.json", "https://raw.githubusercontent.com/DataHubz/attest-verifier/main/latest.json"],
+};
+const $ = (id) => document.getElementById(id);
+const enc = new TextEncoder(), dec = new TextDecoder();
+const hex = (b) => Array.from(new Uint8Array(b)).map((x) => x.toString(16).padStart(2, "0")).join("");
+const unhex = (h) => new Uint8Array((h.replace(/^0x/, "").match(/../g) || []).map((x) => parseInt(x, 16)));
+const sha256 = async (bytes) => new Uint8Array(await crypto.subtle.digest("SHA-256", typeof bytes === "string" ? enc.encode(bytes) : bytes));
+const b64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+const b64url = (s) => b64(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4));
+const toB64url = (b) => btoa(String.fromCharCode(...b)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+
+// ---- Files attached to a PDF: the streams marked /Type /EmbeddedFile (deflated or not) ----------------
+async function inflate(bytes) {
+  const s = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate"));
+  return new Uint8Array(await new Response(s).arrayBuffer());
+}
+// Byte offsets must line up with the text view: decode as latin1, never UTF-8.
+const latin1 = new TextDecoder("latin1");
+async function attachmentsOf(buf) {
+  const raw = new Uint8Array(buf), text = latin1.decode(raw), found = [];
+  const re = /\/Type\s*\/EmbeddedFile\b/g;
+  let m;
+  while ((m = re.exec(text))) {
+    const dictStart = text.lastIndexOf("<<", m.index);
+    const streamAt = text.indexOf("stream", m.index);
+    if (streamAt < 0) continue;
+    const dict = text.slice(dictStart, streamAt);
+    let start = streamAt + 6;
+    if (raw[start] === 13) start++;
+    if (raw[start] === 10) start++;
+    const lenM = /\/Length\s+(\d+)(?!\s+\d+\s+R)/.exec(dict);
+    const end = lenM ? start + Number(lenM[1]) : text.indexOf("endstream", start);
+    let body = raw.slice(start, end);
+    if (/\/Filter\s*\/FlateDecode/.test(dict)) {
+      if (typeof DecompressionStream === "undefined") { found.noInflate = true; continue; }
+      try { body = await inflate(body); } catch { continue; }
+    }
+    found.push(body);
+  }
+  return found;
+}
+
+// ---- WebAuthn signatures ---------------------------------------------------------------------------
+function derToRaw(der) {
+  let i = 2; if (der[1] & 0x80) i += der[1] & 0x7f;
+  const read = () => { i++; let len = der[i++]; let v = der.slice(i, i + len); i += len; while (v.length > 32 && v[0] === 0) v = v.slice(1); const out = new Uint8Array(32); out.set(v, 32 - v.length); return out; };
+  const r = read(), s = read(); const raw = new Uint8Array(64); raw.set(r); raw.set(s, 32); return raw;
+}
+async function webauthnValid(s, rp) {
+  const a = s.webauthnAssertion, k = s.passkey;
+  const clientBytes = b64url(a.clientDataJSON), client = JSON.parse(dec.decode(clientBytes));
+  const challengeOk = client.type === "webauthn.get" && client.challenge === toB64url(await sha256(s.statement));
+  const originOk = !rp || client.origin === rp.origin;
+  const auth = b64url(a.authenticatorData);
+  const rpHash = rp ? await sha256(rp.rpId) : null;
+  const rpOk = !rp || (auth.length >= 37 && rpHash.every((b, i) => auth[i] === b));
+  const flags = auth[32] || 0, present = (flags & 1) !== 0, verified = (flags & 4) !== 0;
+  const data = new Uint8Array(auth.length + 32); data.set(auth); data.set(await sha256(clientBytes), auth.length);
+  const spki = b64(k.publicKeySpki), sig = b64url(a.signature);
+  let sigOk = false;
+  if (k.alg === -7) sigOk = await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, await crypto.subtle.importKey("spki", spki, { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]), derToRaw(sig), data);
+  else if (k.alg === -257) sigOk = await crypto.subtle.verify("RSASSA-PKCS1-v1_5", await crypto.subtle.importKey("spki", spki, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]), sig, data);
+  else if (k.alg === -8) sigOk = await crypto.subtle.verify({ name: "Ed25519" }, await crypto.subtle.importKey("spki", spki, { name: "Ed25519" }, false, ["verify"]), sig, data);
+  return { ok: challengeOk && originOk && rpOk && present && verified && sigOk, parts: { challengeOk, originOk, rpOk, present, verified, sigOk }, origin: client.origin };
+}
+
+// ---- The checks -------------------------------------------------------------------------------------
+let results = [];
+const add = (state, title, detail) => results.push({ state, title, detail });
+function render(ev) {
+  const failed = results.some((r) => r.state === "bad");
+  if (results.length === 1 && /newer evidence format/.test(results[0].title)) {
+    $("out").innerHTML = `<div class="verdict bad">Not checked: this document is newer than this verifier. Get the latest verifier to check it.</div><div class="card"><div class="row"><span class="icon warn">!</span><div><div class="title">${esc(results[0].title)}</div><div class="detail">${results[0].detail}</div></div></div></div>`;
+    return;
+  }
+  const unknown = results.some((r) => r.state === "warn");
+  const icon = { ok: "✓", bad: "✕", warn: "!", info: "i" };
+  $("out").innerHTML =
+    `<div class="verdict ${failed ? "bad" : "ok"}">${failed ? "This document does not verify: see the failed checks below." : unknown ? "Every check that could run passed. Some could not run here (see below)." : "Verified: the document, every signature and entry, the signed state and its anchor on the public blockchain."}</div>` +
+    `<h2>${esc(ev.title || "Signed agreement")}</h2><p class="small">${ev.verificationCode ? `Verification code ATT-${esc(ev.verificationCode.slice(0, 4))}-${esc(ev.verificationCode.slice(4))} · ` : ""}completed ${esc(ev.completedAt || "")}</p>` +
+    `<div class="card">${results.map((r) => `<div class="row"><span class="icon ${r.state}">${icon[r.state]}</span><div><div class="title">${esc(r.title)}</div>${r.detail ? `<div class="detail">${r.detail}</div>` : ""}</div></div>`).join("")}</div>`;
+}
+
+async function rpc(url, method, params) {
+  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) });
+  const j = await r.json();
+  if (j.error) throw new Error(j.error.message);
+  return j.result;
+}
+
+/** The evidence format's version number (1, 2, ...), or null if this isn't Attest evidence. */
+function formatOf(ev) {
+  const m = ev && typeof ev.format === "string" && /^attest\.agreement_evidence\.v(\d+)$/.exec(ev.format);
+  return m ? Number(m[1]) : null;
+}
+
+/** Format v1 (signed copies before October 10, 2026), mapped onto v2's shape. It carries the signatures and the
+ *  fingerprints, but not the signed state's text or the anchor's Merkle path. */
+function fromV1(e) {
+  const origin = (() => { try { return new URL(e.verify).origin; } catch { return null; } })();
+  return {
+    format: e.format,
+    legacy: true,
+    agreementId: e.agreementId,
+    title: e.title,
+    completedAt: e.completedAt,
+    verificationCode: null,
+    document: { sha256: e.documentSha256, file: null },
+    webauthn: origin ? { origin, rpId: new URL(origin).hostname } : null,
+    signers: (e.signers || []).map((s) => ({
+      email: s.email,
+      name: s.name,
+      signedAt: s.signedAt,
+      statement: s.consentJson || null,
+      entries: null,
+      entriesSha256: s.entriesSha256 || null,
+      passkey: s.passkeyPublicKey ? { publicKeySpki: s.passkeyPublicKey, alg: s.passkeyAlg } : null,
+      webauthnAssertion: s.signature ? { authenticatorData: s.authenticatorData, clientDataJSON: s.clientDataJSON, signature: s.signature } : null,
+    })),
+    signedState: e.signedStateSha256 ? { message: null, sha256: e.signedStateSha256 } : null,
+    anchor: e.anchor ? { chainId: e.anchor.chainId, txHash: e.anchor.txHash, explorer: e.anchor.explorer, receiptId: e.anchor.receiptId, rpc: null, merkleRoot: null, merkleProof: [] } : null,
+    proofs: (e.proofs || []).map((p) => ({ id: p.id, statement: null, proof: null, zkverify: { status: p.zkverifyStatus, txHash: p.zkverifyTxHash } })),
+  };
+}
+
+async function verify(ev, original) {
+  results = [];
+  const fmt = formatOf(ev);
+  if (!fmt) {
+    add("bad", "No Attest evidence found", "Drop an Attest signed copy (PDF), or its attest-evidence.json together with original-document.pdf.");
+    return render(ev || {});
+  }
+  if (fmt > Math.max(...VERIFIER.formats)) {
+    add("warn", `This document uses a newer evidence format (v${fmt})`, `This verifier (version ${VERIFIER.version}) reads formats v${VERIFIER.formats.join(", v")}. Get the latest verifier: <a href="${VERIFIER.repo}/releases" target="_blank" rel="noopener">${VERIFIER.repo}</a>, or attest.datahubz.com/attest-verifier.html. The document's evidence is unchanged and stays verifiable.`);
+    return render(ev);
+  }
+  if (fmt === 1) ev = fromV1(ev);
+  // 1. The document
+  if (original) {
+    const h = hex(await sha256(original));
+    add(h === ev.document.sha256 ? "ok" : "bad", h === ev.document.sha256 ? "The document is exactly the one signed" : "The document does not match what was signed", `SHA-256 <span class="mono">${h}</span>`);
+  } else add("warn", "The original document wasn't found", "It's attached to the signed copy as original-document.pdf.");
+  // 2-4. Each signer
+  for (const s of ev.signers) {
+    let st = null;
+    try { st = JSON.parse(s.statement); } catch {}
+    if (!st || !s.webauthnAssertion || !s.passkey) { add("bad", `${s.name || s.email}: no signature evidence`, ""); continue; }
+    if (s.entries != null) {
+      const eh = hex(await sha256(s.entries));
+      add(eh === s.entriesSha256 ? "ok" : "bad", `${s.name || s.email}: entries match what they signed`, `Entries SHA-256 <span class="mono">${eh}</span>`);
+    }
+    const namesDoc = st.documentSha256 === ev.document.sha256;
+    const namesEntries = !s.entriesSha256 || st.fieldsSha256 === s.entriesSha256;
+    add(namesDoc && namesEntries ? "ok" : "bad", `${s.name || s.email}: the statement names this document${s.entriesSha256 ? " and these entries" : ""}`, esc(st.statement || ""));
+    try {
+      const w = await webauthnValid(s, ev.webauthn);
+      add(w.ok ? "ok" : "bad", `${s.name || s.email}: passkey signature valid`, w.ok ? `Signed ${esc(s.signedAt || st.signedAt || "")} on ${esc(w.origin)}, with the user present and verified` : esc(JSON.stringify(w.parts)));
+    } catch (e) { add("bad", `${s.name || s.email}: passkey signature could not be checked`, esc(e.message)); }
+  }
+  // 5. The signed state
+  const ss = ev.signedState;
+  let stateOk = false;
+  if (ss && ss.message) {
+    const h = hex(await sha256(ss.message));
+    let m = null; try { m = JSON.parse(ss.message); } catch {}
+    const covers = m && m.documentSha256 === ev.document.sha256 && ev.signers.every((s) => m.signers.some((x) => x.email === s.email.toLowerCase() && (!s.entriesSha256 || x.fieldsSha256 === s.entriesSha256)));
+    stateOk = h === ss.sha256 && covers;
+    add(stateOk ? "ok" : "bad", "The signed state covers the document and every signer", `SHA-256 <span class="mono">${h}</span>`);
+  } else if (ev.legacy && ss) {
+    add("warn", "This older format doesn't carry the signed state's text", `Its fingerprint is <span class="mono">${esc(ss.sha256)}</span>; signed copies made from October 10, 2026 carry the text, so it can be recomputed.`);
+  } else add("bad", "The signed state is missing", "");
+  // 6. The Merkle path
+  const an = ev.anchor;
+  let rootOk = false;
+  if (an && an.merkleRoot && ss) {
+    let node = hex(await sha256(`${an.receiptId}:${ss.sha256.toLowerCase()}`));
+    const leafOk = node === an.leaf;
+    for (const sib of an.merkleProof || []) {
+      const [lo, hi] = node <= sib ? [node, sib] : [sib, node];
+      const both = new Uint8Array(64); both.set(unhex(lo)); both.set(unhex(hi), 32);
+      node = hex(await sha256(both));
+    }
+    rootOk = leafOk && node === an.merkleRoot.replace(/^0x/, "");
+    add(rootOk ? "ok" : "bad", "The signed state is in the anchored record", `Merkle root <span class="mono">${node}</span> (${(an.merkleProof || []).length} step${(an.merkleProof || []).length === 1 ? "" : "s"})`);
+  } else if (ev.legacy) {
+    add("warn", "This older format doesn't carry the anchor's Merkle path", an && an.txHash ? `The anchoring transaction is <span class="mono">${esc(an.txHash)}</span>${an.explorer ? ` (<a href="${esc(an.explorer)}" target="_blank" rel="noopener">explorer</a>)` : ""}. Signed copies made from October 10, 2026 carry the full path.` : "");
+  } else add("bad", "The anchor's Merkle path is missing", "");
+  // 7. On chain
+  const url = $("rpc").value.trim() || (an && an.rpc);
+  if (!$("rpc").value && an && an.rpc) $("rpc").value = an.rpc;
+  if (ev.legacy) {
+    // The on-chain check needs the Merkle root, which this format doesn't carry.
+  } else if (an && an.txHash && url) {
+    try {
+      const rc = await rpc(url, "eth_getTransactionReceipt", [an.txHash]);
+      const log = rc && rc.logs.find((l) => (!an.contract || l.address.toLowerCase() === an.contract.toLowerCase()) && l.data.toLowerCase().startsWith("0x" + an.merkleRoot.replace(/^0x/, "").toLowerCase()));
+      if (rc && rc.status === "0x1" && log) {
+        const block = await rpc(url, "eth_getBlockByNumber", [rc.blockNumber, false]);
+        const when = new Date(parseInt(block.timestamp, 16) * 1000).toISOString();
+        add(rootOk ? "ok" : "bad", "Anchored on the public blockchain", `Chain ${esc(an.chainId)}, block ${parseInt(rc.blockNumber, 16)}, ${when}. Transaction <span class="mono">${esc(an.txHash)}</span>${an.explorer ? ` · <a href="${esc(an.explorer)}" target="_blank" rel="noopener">explorer</a>` : ""}`);
+      } else add("bad", "The transaction does not record this root", `Transaction <span class="mono">${esc(an.txHash)}</span>`);
+    } catch (e) { add("warn", "The on-chain check couldn't run here", `${esc(e.message)}. Check your connection, or enter another public node of chain ${esc(an.chainId)} above, then drop the file again.`); }
+  } else add("bad", "No anchor transaction in the evidence", "");
+  // 8. Zero-knowledge proofs
+  for (const p of ev.proofs || []) {
+    if (!p.proof) continue;
+    add("info", `Zero-knowledge proof ${p.id}${p.statement ? `: ${p.statement}` : ""}`, `Check it with any Groth16 verifier, for example: save proofs[i].verificationKey, .publicSignals and .proof as vk.json, public.json, proof.json, then run <span class="mono">npx snarkjs groth16 verify vk.json public.json proof.json</span>.${p.zkverify && p.zkverify.txHash ? ` Also verified on zkVerify: <span class="mono">${esc(p.zkverify.txHash)}</span>.` : ""}`);
+  }
+  render(ev);
+}
+
+async function handle(files) {
+  if (!window.crypto || !crypto.subtle) {
+    $("out").innerHTML = '<div class="verdict bad">This browser can\'t run the checks on this page. Open the file in a current browser, from your disk (file://) or over https.</div>';
+    return;
+  }
+  let ev = null, original = null;
+  for (const f of files) {
+    const buf = new Uint8Array(await f.arrayBuffer());
+    if (/\.json$/i.test(f.name) || buf[0] === 123) { try { ev = JSON.parse(dec.decode(buf)); continue; } catch {} }
+    const att = await attachmentsOf(buf);
+    if (att.length) {
+      for (const b of att) {
+        const head = latin1.decode(b.slice(0, 64));
+        if (head.startsWith("%PDF")) original = b;
+        else if (head.trimStart().startsWith("{")) { try { const j = JSON.parse(dec.decode(b)); if (j.format) ev = j; } catch {} }
+      }
+    } else if (latin1.decode(buf.slice(0, 5)) === "%PDF-") original = original || buf;
+  }
+  if (!ev && files.some((f) => /\.pdf$/i.test(f.name)) && typeof DecompressionStream === "undefined") {
+    $("out").innerHTML = '<div class="verdict bad">This browser can\'t open the PDF\'s attachments. Save attest-evidence.json and original-document.pdf from the PDF (any PDF reader lists its attachments) and drop both here.</div>';
+    return;
+  }
+  $("out").innerHTML = '<p class="small">Checking…</p>';
+  await verify(ev, original);
+}
+$("ver").textContent = `Version ${VERIFIER.version} · reads evidence formats v${VERIFIER.formats.join(", v")} · source and releases: github.com/DataHubz/attest-verifier ·`;
+// Opt-in only: nothing is fetched unless this button is clicked.
+const newer = (a, b) => { const x = a.split(".").map(Number), y = b.split(".").map(Number); for (let i = 0; i < 3; i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); } return false; };
+$("update").addEventListener("click", async () => {
+  $("updateOut").textContent = "Checking…";
+  for (const url of VERIFIER.latest) {
+    try {
+      const r = await fetch(url, { cache: "no-store" });
+      if (!r.ok) continue;
+      const l = await r.json();
+      $("updateOut").innerHTML = newer(l.version, VERIFIER.version)
+        ? `Version ${esc(l.version)} is available: <a href="${esc(l.url)}" target="_blank" rel="noopener">download</a> (SHA-256 <span class="mono">${esc(String(l.sha256).slice(0, 16))}…</span>, anchored on Horizen: check it at attest.datahubz.com/verify).`
+        : "This is the latest version.";
+      return;
+    } catch {}
+  }
+  $("updateOut").textContent = "Couldn't reach a release list. See github.com/DataHubz/attest-verifier/releases.";
+});
+const drop = $("drop");
+drop.addEventListener("click", () => $("file").click());
+drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") $("file").click(); });
+$("file").addEventListener("change", (e) => handle([...e.target.files]));
+drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
+drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+drop.addEventListener("drop", (e) => { e.preventDefault(); drop.classList.remove("over"); handle([...e.dataTransfer.files]); });
+</script>
+</body>
+</html>
