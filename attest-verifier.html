@@ -498,8 +498,8 @@ pako/dist/pako.esm.mjs:
 // This file's version, and the evidence formats it reads. Every release reads every earlier format, so an
 // older record verifies with any newer verifier; a record in a newer format is reported as such.
 const VERIFIER = {
-  version: "1.1.0",
-  formats: { agreement: [1, 2], receipt: [1], certificate: [1], card: [1], proof: [1] },
+  version: "1.2.0",
+  formats: { agreement: [1, 2, 3], receipt: [1], certificate: [1], card: [1], proof: [1] },
   repo: "https://github.com/DataHubz/attest-verifier",
   latest: ["https://attest.datahubz.com/attest-verifier/latest.json", "https://raw.githubusercontent.com/DataHubz/attest-verifier/main/latest.json"],
 };
@@ -711,7 +711,7 @@ async function groth16(vk, signals, proof) {
 let results = [];
 const add = (state, title, detail) => results.push({ state, title, detail });
 const headline = {
-  agreement: "Verified: the document, every signature and entry, the signed state and its anchor on the public blockchain.",
+  agreement: "Verified: the pages you see, the document, every signature and entry, the signed state and its anchor on the public blockchain.",
   receipt: "Verified: this fingerprint was recorded and anchored on the public blockchain, and has not changed since.",
   certificate: "Verified: the content, every signature, the issuer's signature and key, and the anchor on the public blockchain.",
   card: "Verified: the issuer's signature and key, the holder's approval, the anchors and the current status on the public blockchain.",
@@ -772,10 +772,10 @@ function fromV1(e) {
 async function verifyAgreement(ev, files) {
   if (ev.legacy !== true && /\.v1$/.test(ev.format)) ev = fromV1(ev);
   const original = files.pdf;
-  // 1. The document
+  // 1. The original document inside
   if (original) {
     const h = await sha256hex(original);
-    add(h === ev.document.sha256 ? "ok" : "bad", h === ev.document.sha256 ? "The document is exactly the one signed" : "The document does not match what was signed", `SHA-256 ${mono(h)}`);
+    add(h === ev.document.sha256 ? "ok" : "bad", h === ev.document.sha256 ? "The original document inside is exactly the one signed" : "The original document inside does not match what was signed", `SHA-256 ${mono(h)}`);
   } else add("warn", "The original document wasn't found", "It's attached to the signed copy as original-document.pdf.");
   // 2-4. Each signer
   for (const s of ev.signers) {
@@ -808,17 +808,47 @@ async function verifyAgreement(ev, files) {
   } else add("bad", "The signed state is missing", "");
   // 6-7. The Merkle path, and the transaction that anchors its root
   const an = ev.anchor;
+  let stateTx = null;
   if (ev.legacy) {
     add("warn", "This older format doesn't carry the anchor's Merkle path", an && an.txHash ? `The anchoring transaction is ${mono(an.txHash)}${link(an.explorer)}. Signed copies made from October 10, 2026 carry the full path.` : "");
   } else if (an && ss && an.merkleRoot) {
-    await checkAnchor("The signed state", { ...an, type: "merkle" }, ss.sha256, null);
+    stateTx = await checkAnchor("The signed state", { ...an, type: "merkle" }, ss.sha256, null);
   } else add("bad", "The anchor's Merkle path is missing", "");
+  // 9. The visible pages: the bytes before the appended evidence, anchored as this agreement's sealed copy
+  await checkVisiblePages(ev, files, an, stateTx);
   // 8. Zero-knowledge proofs about this agreement
   for (const p of ev.proofs || []) {
     if (!p.proof || !p.verificationKey) continue;
     await checkAgreementProof({ ...p, revealed: p.revealed || {} }, null, `Proof ${p.id}`, an ? { rpc: an.rpc, contract: an.contract } : null);
   }
   render("agreement", ev.title || "Signed agreement", `${ev.verificationCode ? `Verification code ATT-${esc(ev.verificationCode.slice(0, 4))}-${esc(ev.verificationCode.slice(4))} · ` : ""}completed ${esc(ev.completedAt || "")}`);
+}
+
+/**
+ * A signed copy's visible pages are its first visibleCopy.byteLength bytes; the evidence, the original and the
+ * verifier follow as a PDF incremental update. Their SHA-256 is anchored by the wallet that anchored the signed
+ * state: isAnchored(sha256("attest.signed_copy.v1|" + agreementId + "|" + variant + "|" + sha256)).
+ */
+async function checkVisiblePages(ev, files, an, stateTx) {
+  const v = ev.visibleCopy;
+  if (!v) {
+    if (files.outer) add("warn", "The pages you see aren't covered by this copy's evidence", "This copy was made before October 10, 2026: its evidence authenticates the original document inside it, not the visible pages. Compare the pages with the original inside, or drop the file on attest.datahubz.com/verify, which checks the whole file against its recorded fingerprint.");
+    return;
+  }
+  if (!files.outer) { add("info", "Drop the signed PDF itself to check the pages you see", `Its visible pages have SHA-256 ${mono(v.sha256)}.`); return; }
+  if (!(v.byteLength > 0 && v.byteLength < files.outer.length)) { add("bad", "The pages you see are not the signed copy", "The file's structure doesn't match its evidence."); return; }
+  const h = await sha256hex(files.outer.subarray(0, v.byteLength));
+  if (h !== v.sha256) { add("bad", "The pages you see have been changed", `The visible pages hash to ${mono(h)}, not to the signed copy's ${mono(v.sha256)}.`); return; }
+  if (!an || !an.contract) { add("warn", "The pages' anchor couldn't be looked up", "The evidence doesn't name the anchoring contract yet: the agreement isn't anchored."); return; }
+  const url = nodeUrl(an.rpc);
+  if (!url) { add("warn", "The pages' anchor couldn't be looked up", "Enter a public node above."); return; }
+  try {
+    const r = await isAnchored(url, an.contract, await sha256hex(`attest.signed_copy.v1|${ev.agreementId}|${v.variant}|${h}`));
+    const sameWallet = !stateTx || !stateTx.from || (r.from && r.from === stateTx.from.toLowerCase());
+    if (r.anchored && sameWallet) add("ok", "The pages you see are exactly the sealed signed copy", `${v.variant === "pages" ? "Signed pages only" : "Signed copy with its certificate pages"}: their SHA-256 ${mono(h)} was anchored ${when(r.at)} by the wallet that anchored the signed state.`);
+    else if (r.anchored) add("bad", "The pages you see were anchored by a different wallet", `Wallet ${mono(r.from)}, not the one that anchored the signed state.`);
+    else add("bad", "The pages you see aren't anchored as this agreement's signed copy", "Either they were altered (with the evidence edited to match), or the copy was made in the last few minutes and its anchor is still on its way: check again shortly.");
+  } catch (e) { add("warn", "The pages' anchor couldn't be looked up here", esc(e.message)); }
 }
 
 // ============================================================================================== receipts
@@ -1105,7 +1135,7 @@ async function handle(list) {
     return;
   }
   let ev = null;
-  const files = { pdf: null, other: null, otherName: null };
+  const files = { pdf: null, outer: null, other: null, otherName: null };
   for (const f of list) {
     const buf = new Uint8Array(await f.arrayBuffer());
     if (/\.json$/i.test(f.name) || buf[0] === 123) {
@@ -1117,7 +1147,7 @@ async function handle(list) {
     for (const b of att) {
       const head = latin1.decode(b.slice(0, 64));
       if (head.startsWith("%PDF")) { files.pdf = b; usedAttachment = true; }
-      else if (head.trimStart().startsWith("{")) { try { const j = JSON.parse(dec.decode(b)); if (j.format) { ev = j; usedAttachment = true; } } catch {} }
+      else if (head.trimStart().startsWith("{")) { try { const j = JSON.parse(dec.decode(b)); if (j.format) { ev = j; usedAttachment = true; files.outer = buf; } } catch {} }
     }
     if (!usedAttachment) {
       if (isPdf) files.pdf = files.pdf || buf;
