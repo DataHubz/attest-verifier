@@ -5,7 +5,7 @@ import { verifyGroth16 } from "./src/groth16.mjs";
 const cases = [];
 for (const f of process.argv.slice(2)) {
   const e = JSON.parse(readFileSync(f, "utf8"));
-  const z = e.proof || e.zkProof || (e.findingsClosure && { ...e.findingsClosure });
+  const z = e.verificationKey ? e : e.proof || e.zkProof || (e.findingsClosure && { ...e.findingsClosure });
   if (z && z.verificationKey) cases.push([f.split("/").pop(), z.verificationKey, z.publicSignals, z.proof]);
 }
 let bad = 0;
