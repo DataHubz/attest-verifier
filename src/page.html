@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Attest verifier</title>
+<!--
+  Attest standalone verifier. Open source (MIT): github.com/DataHubz/attest-verifier. Built from src/ by build.mjs;
+  the libraries it bundles are listed in package.json. No Attest service: it checks signed agreements, receipts,
+  certificates, Proof Cards and zero-knowledge proofs on this device, and reads anchors from a public node of the
+  chain they are on. Save it anywhere and open it in any browser; it works offline except the on-chain checks.
+-->
+<style>
+  :root { --ink:#0a2540; --body:#425466; --muted:#697386; --line:#e3e8ee; --ok:#047857; --bad:#b91c1c; --warn:#b45309; --accent:#4f46e5; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; color: var(--body); background: #f6f9fc; }
+  main { max-width: 860px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { color: var(--ink); font-size: 26px; margin: 0 0 6px; }
+  h2 { color: var(--ink); font-size: 17px; margin: 28px 0 10px; }
+  p { margin: 6px 0; }
+  .drop { margin-top: 18px; border: 2px dashed #c7d2fe; border-radius: 14px; background: #fff; padding: 34px 20px; text-align: center; cursor: pointer; }
+  .drop.over { border-color: var(--accent); background: #eef2ff; }
+  .drop b { color: var(--ink); }
+  .card { background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin: 10px 0; }
+  .row { display: flex; gap: 10px; align-items: flex-start; padding: 6px 0; }
+  .row + .row { border-top: 1px solid #f0f3f7; }
+  .icon { flex: none; width: 22px; height: 22px; border-radius: 99px; color: #fff; font-weight: 700; font-size: 13px; display: flex; align-items: center; justify-content: center; margin-top: 1px; }
+  .ok { background: var(--ok); } .bad { background: var(--bad); } .warn { background: var(--warn); } .info { background: #94a3b8; }
+  .title { color: var(--ink); font-weight: 600; }
+  .detail { font-size: 13px; color: var(--muted); word-break: break-all; }
+  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+  .verdict { margin-top: 22px; padding: 16px 18px; border-radius: 12px; font-weight: 600; color: var(--ink); }
+  .verdict.ok { background: #ecfdf5; border: 1px solid #a7f3d0; }
+  .verdict.bad { background: #fef2f2; border: 1px solid #fecaca; }
+  input[type=text] { width: 100%; font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
+  label { font-size: 13px; color: var(--muted); }
+  button.link { font: inherit; color: var(--accent); background: none; border: 0; padding: 0; cursor: pointer; font-weight: 600; }
+  .small { font-size: 13px; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Attest verifier</h1>
+  <p>Checks Attest records on this device, with no Attest service: signed agreements, receipts, certificates, Proof Cards and zero-knowledge proofs. Every signature, fingerprint and proof is checked here, and every anchor is read from a public blockchain.</p>
+  <p class="small"><span id="ver"></span> <button id="update" type="button" class="link">Check for a newer version</button> <span id="updateOut"></span></p>
+  <div id="drop" class="drop" tabindex="0">
+    <b>Drop a signed PDF or an evidence file here</b>, or click to choose.<br>
+    <span class="small">Evidence files (attest-evidence-….json) download from each receipt, certificate, Proof Card and proof page. Add the original file or PDF to check it too. Nothing is uploaded.</span>
+    <input id="file" type="file" multiple accept=".pdf,.json,application/pdf,application/json" hidden>
+  </div>
+  <p style="margin-top:14px"><label for="rpc">Public node for the on-chain check (any node of the anchor's chain works):</label></p>
+  <input id="rpc" type="text" placeholder="read from the evidence">
+  <div id="out"></div>
+  <h2>How this works</h2>
+  <p class="small">Every fingerprint is SHA-256. Passkey signatures are WebAuthn assertions over the SHA-256 of an exact statement. Issuers sign with P-256 keys: certificates as W3C Verifiable Credentials (JOSE), Proof Cards with selective disclosure (W3C Data Integrity, ecdsa-sd-2023). Zero-knowledge proofs are Groth16 over BN254. Each record, issuer key, revocation and status change is anchored on a public blockchain, under a value this page recomputes and reads from the chain. Every format and check is specified in FORMAT.md, so any SHA-256 tool, WebAuthn library, credential library, Groth16 verifier and Ethereum node can repeat them.</p>
+</main>
+<script>/*LIBS*/</script>
+<script>/*MAIN*/</script>
+</body>
+</html>

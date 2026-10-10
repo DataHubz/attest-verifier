@@ -1,0 +1,37 @@
+{
+    "@context": {
+        "@version": 1.1,
+        "@vocab": "https://attest.datahubz.com/vocab#",
+        "email": "https://schema.org/email",
+        "TrainingCredential": "https://attest.datahubz.com/vocab#TrainingCredential",
+        "SupplierApprovalCredential": "https://attest.datahubz.com/vocab#SupplierApprovalCredential",
+        "MembershipCredential": "https://attest.datahubz.com/vocab#MembershipCredential",
+        "EmploymentCredential": "https://attest.datahubz.com/vocab#EmploymentCredential",
+        "AttestCredential": "https://attest.datahubz.com/vocab#AttestCredential",
+        "completedOn": {
+            "@id": "https://attest.datahubz.com/vocab#completedOn",
+            "@type": "http://www.w3.org/2001/XMLSchema#date"
+        },
+        "approvedOn": {
+            "@id": "https://attest.datahubz.com/vocab#approvedOn",
+            "@type": "http://www.w3.org/2001/XMLSchema#date"
+        },
+        "memberSince": {
+            "@id": "https://attest.datahubz.com/vocab#memberSince",
+            "@type": "http://www.w3.org/2001/XMLSchema#date"
+        },
+        "startDate": {
+            "@id": "https://attest.datahubz.com/vocab#startDate",
+            "@type": "http://www.w3.org/2001/XMLSchema#date"
+        },
+        "endDate": {
+            "@id": "https://attest.datahubz.com/vocab#endDate",
+            "@type": "http://www.w3.org/2001/XMLSchema#date"
+        },
+        "hours": "https://attest.datahubz.com/vocab#hours",
+        "result": "https://attest.datahubz.com/vocab#result",
+        "reference": "https://attest.datahubz.com/vocab#reference",
+        "memberNumber": "https://attest.datahubz.com/vocab#memberNumber",
+        "department": "https://attest.datahubz.com/vocab#department"
+    }
+}
