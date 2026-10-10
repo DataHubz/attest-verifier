@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3.0 (2026-10-10)
+
+- Attest Analytics evidence: a sealed day's anchored summary, figures and commitments; each figure recounted from the records it committed to and each Merkle root recomputed; each committed anchor transaction read from the chain; inclusion proofs for a party's own records. Method in ANALYTICS.md.
+
 ## 1.2.0 (2026-10-10)
 
 - Signed copies (evidence v3) authenticate their visible pages: the verifier hashes the PDF's pages, which come before the evidence (a PDF incremental update), and checks that exact hash is anchored as the agreement's signed copy by the wallet that anchored its signed state. Pages that were changed, or rebuilt around the same attachments, fail.
