@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.5.0 (2026-10-12)
+
+Signed copies from protocol v5: the verifier re-makes the pages you see from what was signed, and the record names people only by name.
+
+- Evidence v5: the verifier re-makes a signed copy's visible pages with Attest's deterministic renderer (`attest.render.v2`, carried in the page with its fonts) from the original document, every signer's signed statement and entries, the signed state and Attest's anchored completion details, and compares them byte for byte with the copy. Pages drawn with anything else fail, and the verifier offers the pages as signed. The same pages render to the same bytes in Chromium, WebKit and Firefox.
+- Statements v3 name each signer by a salted commitment, sign where their entries appear (`layoutSha256`) and commit to the signer's own encryption key. Signed state v3 lists signers by commitment with the SHA-256 of each statement. Attest's agreement anchor v2 also binds the completion details the pages print.
+- Names only: a v5 copy, its evidence and its pages carry no email and no salt, and no zero-knowledge proof (a proof reveals its party's email; each party shares it from the proof's page).
+- The renderer draws the document without anything that runs or attaches: it visits every object of the original and removes scripts (including those chained after a link), launches, form submissions, media, open and additional actions, XFA, attached files and portfolios, keeps links within the document and to web pages, drops every object nothing refers to any more, and refuses to finish if anything active is left. The original document is attached to the signed copy as it was signed.
+- A signature's stamp always carries its label, the verification code and day, and the QR code: a smaller field's stamp grows about its center to 120 by 30 points. The certificate pages list every signer and every step of the audit trail, on as many pages as they need.
+- A v5 copy whose evidence lacks what re-making its pages needs (the document, an entry or the audit trail) fails: a genuine copy always carries them.
+- A v5 signed copy's pages must also be anchored as sealed (`attest.signed_copy.v1`): until that anchor is there, the result is "not verified yet".
+- The verifier attached to a signed copy or a certificate must be one Attest published: every build Attest has served is anchored by its platform organization (`attest.verifier.v1`, TRUST.md), and the verifier checks the attached one against those anchors. A changed or unknown verifier fails; an earlier release is accepted and noted as updated since.
+- The certificate PDF of a v5 agreement is made by the same renderer (variant `certificate`: no document, entries or audit trail) and its pages are re-made and compared byte for byte, like a signed copy's. The completion details name the audit trail by its SHA-256, so the certificate carries the details and the trail stays with the parties; a signed copy's trail must hash to that value. Earlier certificates say plainly that their own pages aren't checked.
+- A link, an outline item or a chained action keeps only a jump within the document, an article thread, a web or email address, or a page turn: any other action is removed, whatever its type, including `javascript:`, `data:` and relative addresses and commands such as print. Every name, address and subtype is read through indirect references, as readers read them.
+- Attachments are found the way a reader finds them, through file specifications, whatever their name or first bytes, and every file other than the evidence and the document must be a verifier build Attest anchored. Files the signed pages carry themselves are reported.
+- `npm test` also renders fixtures to the exact bytes Attest's app makes, with no active content left: a document with every kind of active content, and twenty signers with tiny fields and sixty steps.
+
+Before release, three independent reviews of this version found that a script chained after a link survived the renderer, that the attached verifier wasn't checked, that an attachment starting with a byte order mark, a comment or an SVG escaped that check, that `javascript:` links and print commands survived, that an action whose type was an indirect reference escaped the cleaning, and that a certificate's pages could be redrawn around genuine evidence. All are fixed above.
+
+Affected versions: 1.0.0 to 1.4.2 don't check the verifier attached to a signed copy, so a copy whose attached verifier was replaced still verifies there. Check signed copies with 1.5.0, and open an attached verifier only after this page confirms it. Earlier formats otherwise verify as in 1.4.2.
+
 ## 1.4.2 (2026-10-12)
 
 - Certificates and Proof Cards: an issuer's signature counts only against the key Attest committed on chain. The issuer's DID document in the evidence may carry only that key (as a Multikey and as a JWK, under the issuer's DID), and every proof, on the card and on its status lists, must name it. Found by an independent review: 1.0.0 to 1.4.1 checked a certificate's or card's signature against whichever key its DID document listed, so a fabricated certificate or card whose DID document added a key of the forger's own could verify.

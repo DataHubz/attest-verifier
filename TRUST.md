@@ -13,9 +13,11 @@ The verifier pins these values in `src/main.js` (`TRUST`) and never reads them f
 | Registry | AttestRegistryV3, `0xF44Ed281005c7d506Dc50829a3E24655837FBF75` (anchors from October 12, 2026) |
 | Earlier registry | AttestRegistryV2, `0x0C6a7918e2f8C28C4bb5Cf8d0f4CE27e9B30fa2A` (anchors until October 12, 2026) |
 | Registry authority | `0x23ACBF52e76EE9502174442c87c3cD47c68f44e7`, fixed in AttestRegistryV3 |
+| Platform wallet | `0xdEa7B859DcBd34deB8dc910b5b36d6ACdBeC6F3a`, Attest's platform organization: anchors every verifier build Attest has served |
 | Passkey site | relying party `attest.datahubz.com`, origin `https://attest.datahubz.com` |
 | Circuits | the Groth16 verification keys in `src/circuits/` |
 | Vocabulary | the JSON-LD contexts in `src/contexts/` |
+| Renderer | `attest.render.v2` in `src/renderer/v2.ts`, with its fonts in `src/fonts/` |
 
 The registries are open: any wallet can anchor any value. An anchor counts as Attest's only when the wallet that made
 it is registered on AttestRegistryV3 by the registry authority and was not revoked before the anchor. The authority is
@@ -39,15 +41,26 @@ leaves, `sha256(receiptId + ":" + fingerprint)`. No account can make an Attest w
 | The pages of one agreement shown with the evidence of another | Every statement and the signed state name the agreement, and the pages' anchor names it too. |
 | Content added to a signed copy after its evidence (a second PDF update that overlays a page, a script, an annotation) | The verifier reads the file strictly: after the signed pages there must be exactly Attest's update, attaching the evidence, the original and the verifier, with a catalog that is otherwise the pages' own. Anything else fails, and the verifier offers the signed pages exactly as sealed. |
 | The signed pages edited | Their SHA-256 no longer matches the anchored value. |
+| Pages drawn by whoever sealed the copy with an entry, a name, a date or a field moved (protocol v5) | The verifier re-makes the pages from what the passkeys signed and Attest anchored, with the same deterministic renderer, and compares every byte: pages that show anything else fail. |
+| A signer's entries drawn in another place | Each statement signs where its signer's entries appear (`layoutSha256`); Attest's anchor binds every field's place and owner. |
 | A zero-knowledge proof checked against a key that accepts anything | Proofs are checked only against the pinned verification keys. |
 | A certificate or Proof Card signed by a key the forger adds to the issuer's DID document | The DID document may hold only the key Attest committed on chain from the issuer's wallet; every proof must name it, and no other DID resolves. |
 | A proof's root, or an issuer key, status change or Analytics day, anchored by an outsider | Same as any anchor: it must be from a registered Attest wallet, under its own domain-separated value. |
 | A predictable value anchored first to block Attest | AttestRegistryV3 keeps values per wallet: Attest's anchor still lands. |
+| A signed copy whose attached verifier was replaced, so that opening it shows a forged result | The verifier checks every attached verifier: its SHA-256 and version must be anchored as `attest.verifier.v1` by the pinned platform wallet. A changed or unknown verifier fails, and the page says not to open it. |
+| A document whose links, outline, form or annotations carry a script, a launch, media or an attached file, chained or hung from any key | The renderer visits every object, removes anything that runs or attaches, drops what nothing refers to, and refuses to finish if anything is left; the verifier re-makes the pages with the same code, so pages carrying anything else fail. |
+| A certificate PDF whose pages were redrawn | A v5 certificate's pages are re-made from what was signed and anchored and compared byte for byte. Earlier certificates' pages aren't checked: the verifier says so, and shows the signed and anchored names, dates and fingerprints to compare with. |
+| A link that runs a script (`javascript:`), opens data or a local file, or a viewer command (print, save), written directly or behind an indirect reference | A link, an outline item or a chained action keeps only a jump within the document, an article thread, a web or email address, or a page turn; the renderer removes every other action, reading names through references as readers do. |
+| An attachment that hides from the check (another name, a byte order mark, a comment, an SVG, a missing type) | The verifier finds attachments the way a reader does, through file specifications, and every file other than the evidence and the document must be a verifier build Attest anchored. |
 | A file that tries to run a script in the page | The page runs only its own scripts, by hash (Content Security Policy); links go only to the pinned explorer. Served from attest.datahubz.com it is also sandboxed away from the app's cookies and storage. |
 | A display that shows more than was checked | Titles, names, dates and descriptions shown are the signed or anchored ones. A receipt's description, which no anchor covers, is labeled as the account's own text. |
 
 ## What a result covers
 
+- **Signed copies from evidence v5** (protocol v5, October 12, 2026 on): the verifier re-makes the visible pages from the
+  original document, each signer's signed statement and entries, the signed state and Attest's anchored completion
+  details, and checks them byte for byte against the copy and against the value anchored when it was sealed. The record
+  names people only by name: each signer's email is behind a salted commitment that only the parties can open.
 - **Signed copies from evidence v3 and v4** (October 10, 2026 on): the visible pages are the copy anchored when the
   agreement completed, made in the browser of a party to the agreement. The verifier checks them byte for byte and
   checks the original document inside against what every signer signed.

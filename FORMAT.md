@@ -37,6 +37,8 @@ Organizations anchor these from their own wallet, so a verifier asks the chain d
 | A published JSON-LD context | `sha256("attest.context.v1|" + url + "|" + canonicalJson(document))`, from Attest's platform organization |
 | A signed copy's visible pages | `sha256("attest.signed_copy.v1|" + agreementId + "|" + variant + "|" + sha256(visible bytes))`, variant `full` or `pages`, from the wallet that anchored the agreement's signed state |
 | A completed agreement | `sha256("attest.agreement.v1|" + agreementId + "|" + signedState.sha256 + "|" + S)`, from the creator's wallet, where `S` is the SHA-256 of the JSON array of `[lowercase email, statement, publicKeySpki, alg, authenticatorData, clientDataJSON, signature]` for every signer (missing values as `""`, a missing alg as `null`), sorted by email |
+| A completed agreement (protocol v5) | `sha256("attest.agreement.v2|" + agreementId + "|" + signedState.sha256 + "|" + S + "|" + sha256(details))`, from the creator's wallet, where `S` is as above with each signer's commitment in place of their email, sorted by commitment |
+| A verifier build Attest served | `sha256("attest.verifier.v1|" + version + "|" + sha256(file))`, version from the build's `const VERIFIER = { version: "x.y.z"` or `unversioned`, from Attest's platform organization (TRUST.md) |
 | A sealed Analytics day | `sha256("attest.analytics.v1|" + day + "|" + scope + "|" + sha256)`, with `day` and `scope` from the anchored summary, from the wallet that recorded its receipt |
 
 The wallet that anchored an organization's issuer key is that organization's wallet; certificates, revocations and status changes anchored by the same wallet are its own. The issuer key's anchor time shows when the key was public: a key substituted later carries a later time and a different value.
@@ -132,7 +134,64 @@ The signed copy is the visible pages, saved with a classic cross-reference table
 
 Signed copies made from 2026-10-12. Format v3, with each proof's `root` (`value`, `anchor` with `txHash` and `from`) and the check list above. Anchors may be on AttestRegistryV3.
 
-Copies in formats v1 and v2 authenticate the original document inside them, not their visible pages.
+Copies in formats v1 and v2 authenticate the original document inside them, not their visible pages. Copies in formats v3 and v4 authenticate their visible pages as anchored when sealed; copies in format v5 also re-make them from what was signed.
+
+## Format v5 (`attest.agreement_evidence.v5`)
+
+Signed copies made from 2026-10-12 with protocol v5. The visible pages are re-made by the verifier from what was signed, and the record names people only by name.
+
+```
+format              "attest.agreement_evidence.v5"
+agreementId, title, verificationCode, completedAt
+document.sha256, document.file
+signers[]           in the order of details.signers:
+  name              the name the signer's statement carries
+  commitment        sha256("attest.signer.v1|" + salt + "|" + lowercase email); the salt is the parties' own
+  signedAt
+  statement         the exact JSON text the signer's passkey signed (statement v3, below)
+  entries, entriesSha256, passkey, webauthnAssertion      as in v2
+signedState         message (signed state v3, below) and sha256
+anchor              as in v2
+details             canonical JSON (below), exactly as Attest's agreement anchor v2 binds it
+trail               the audit trail up to completion, canonical JSON of [[type, at, name or null], ...],
+                    whose SHA-256 the details name (null in the certificate)
+visibleCopy         variant ("full", "pages" or "certificate"), byteLength, sha256 as in v3, and renderer "attest.render.v2"
+proofs              [] (zero-knowledge proofs reveal a party's email, so each party shares them from the proof's own page)
+checks[], online
+```
+
+No email and no salt appears anywhere in the copy, its evidence or its pages.
+
+**Statement v3** (the JSON the passkey signs, keys in this order): `v` (3), `statement`, `agreementId`, `title`, `documentSha256`, `fieldsSha256` (when the signer has entries), `layoutSha256`, `signer` (the commitment), `encryptionKey` (when the signer has an encryption key: `sha256("attest.signer_key.v1|" + salt + "|" + key fingerprint)`), `name`, `signedAt`, `nonce`. `layoutSha256` is the SHA-256 of the JSON array `[[id, type, page, x, y, w, h], ...]` of the signer's fields, sorted by id: where their entries appear.
+
+**Signed state v3:** `{"kind":"attest.agreement_completion.v3","agreementId","title","documentSha256","signers":[{"signer","signedAt","fieldsSha256","statementSha256"}, ...]}`, signers sorted by commitment, `statementSha256` the SHA-256 of that signer's statement.
+
+**Details:** canonical JSON (keys sorted, no spaces) of `{v: 1, renderer: "attest.render.v2", verifyCode, completedAt, signers: [commitment, ...], fields: [[id, type, page, x, y, w, h, commitment], ...] sorted by id, trailSha256}`: everything the pages print beyond the signed state and the signatures. The audit trail it names by `trailSha256` is the parties' own: a signed copy carries it, the certificate anyone can download doesn't.
+
+### Checks
+
+1. **Document.** As v2.
+2. **Entries.** As v2.
+3. **Statement.** `v == 3`; it names `agreementId`, `document.sha256`, the signed state's `title`, the signer's `commitment`, the `signedAt` and `fieldsSha256` the signed state lists for that commitment (`fieldsSha256 == entriesSha256`), and `layoutSha256` equals the SHA-256 of that signer's fields in `details` (first seven values of each, sorted by id).
+4. **Passkey signature.** As v2.
+5. **Signed state v3.** `SHA-256(signedState.message) == signedState.sha256`; the message names `agreementId`, `document.sha256` and exactly the evidence's commitments, each with the SHA-256 of their statement.
+6. **Merkle path** and 7. **On chain**, as v2.
+8. **Details.** `details` is canonical JSON with renderer `attest.render.v2`, its `signers` are exactly the evidence's commitments, and every field belongs to one of them. A signed copy's `trail` hashes to `details.trailSha256`.
+9. **Attest's anchor of the agreement (v2).** The protocol v5 agreement value (see "Values anyone can recompute") is an Attest anchor by `W`: it commits to every signer's statement, passkey key and signature, and to `details`.
+10. **The visible pages, re-made.** Renderer `attest.render.v2` (`src/renderer/v2.ts`, deterministic: the same input gives the same bytes in every engine) makes the pages from `original-document.pdf`, `visibleCopy.variant`, the origin `https://attest.datahubz.com`, the agreement (`agreementId`, the signed state's `title`, `document.sha256`, `signedState.sha256`, `anchor.txHash`), `details`, `trail` (the full variant prints it), each signer's commitment, the `name` in their statement and the `signedAt` in the signed state, and every signer's entries. The result must be byte for byte the first `visibleCopy.byteLength` bytes of the PDF. Every input is signed by a passkey or anchored by Attest, so pages that show anything else fail, and the verifier offers the pages as signed.
+11. **The pages were anchored when sealed** (`attest.signed_copy.v1`, from `W`; required, and reported as not yet anchored until it is), and **nothing follows them but Attest's attachments** (check 11 of v3).
+12. **The attached verifier** is a build Attest served: its verifier value is anchored by the platform wallet.
+
+The renderer draws nothing that runs or attaches: it visits every object reachable from the original's trailer; removes the keys `AA`, `OpenAction`, `AF`, `EF`, `Collection`, `XFA`, `JS` and `Base`, the `JavaScript` and `EmbeddedFiles` name trees, every reference (a dictionary entry or an array element) to an action of type JavaScript, Launch, SubmitForm, ImportData, ResetForm, Rendition, Sound, Movie, GoToE, GoToR, Hide, SetOCGState, RichMediaExecute, Trans or GoTo3DView, to a URI action whose address (with control characters and spaces removed) doesn't start with `http:`, `https:` or `mailto:`, to a Named action other than NextPage, PrevPage, FirstPage and LastPage, to any action under `/A`, `/PA` or `/Next` other than GoTo, Thread, such a URI or such a Named action, to an annotation of subtype FileAttachment, RichMedia, Screen, Movie, Sound or 3D, and to an embedded file, reading every name, address and subtype through indirect references; draws; drops every object nothing reachable refers to; and fails if any of these is left. A signature's stamp is at least 120 by 30 points, grown about its field's center within the page.
+
+### The certificate (format v5)
+
+The certificate PDF that Attest serves for a v5 agreement, to anyone allowed to see it, is renderer `attest.render.v2`'s variant `certificate`: the certificate pages alone (each signer's stamp with their name, no document, entries or audit trail), followed by one incremental update attaching `attest-evidence.json` and `attest-verifier.html`. Its evidence is format v5 with `visibleCopy.variant` `certificate`, `trail: null` and no original document. Checks 3 to 10 apply, check 10 re-making the certificate's pages from the same inputs without the document or the entries; the certificate has no sealing anchor of its own.
+
+### Attached files
+
+A reader lists every file a PDF's file specifications attach (`/EF`), whatever its name or first bytes. The verifier finds them the same way and requires: in a strictly read signed copy or certificate, `attest-verifier.html` is a verifier build Attest anchored, and any file the signed pages carry themselves is reported; in any other PDF with Attest evidence, every attached file other than the evidence and one PDF (the document) is a verifier build Attest anchored.
+
 
 ## Format v1 (`attest.agreement_evidence.v1`)
 
