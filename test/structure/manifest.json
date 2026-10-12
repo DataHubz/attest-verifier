@@ -1,0 +1,164 @@
+[
+  {
+    "name": "genuine",
+    "file": "genuine.pdf",
+    "length": 1243,
+    "expect": "ok"
+  },
+  {
+    "name": "mirror",
+    "file": "mirror.pdf",
+    "length": 1243,
+    "expect": "ok"
+  },
+  {
+    "name": "pages-carry-their-own-attachment",
+    "file": "pages-carry-their-own-attachment.pdf",
+    "length": 1838,
+    "expect": "ok"
+  },
+  {
+    "name": "pages-with-named-destinations",
+    "file": "pages-with-named-destinations.pdf",
+    "length": 1315,
+    "expect": "ok"
+  },
+  {
+    "name": "A24-update-drops-the-documents-names",
+    "file": "A24-update-drops-the-documents-names.pdf",
+    "length": 1315,
+    "expect": "drops /Dests"
+  },
+  {
+    "name": "A01-second-update-overlays-a-page",
+    "file": "A01-second-update-overlays-a-page.pdf",
+    "length": 1243,
+    "expect": "doesn't follow the signed pages directly"
+  },
+  {
+    "name": "A02-one-update-attaches-and-overlays",
+    "file": "A02-one-update-attaches-and-overlays.pdf",
+    "length": 1243,
+    "expect": "redefines an object of the signed pages"
+  },
+  {
+    "name": "A03-open-action-script",
+    "file": "A03-open-action-script.pdf",
+    "length": 1243,
+    "expect": "adds /OpenAction"
+  },
+  {
+    "name": "A04-acroform-added",
+    "file": "A04-acroform-added.pdf",
+    "length": 1243,
+    "expect": "adds /AcroForm"
+  },
+  {
+    "name": "A05-names-javascript",
+    "file": "A05-names-javascript.pdf",
+    "length": 1243,
+    "expect": "adds or changes /JavaScript"
+  },
+  {
+    "name": "A06-unreferenced-object",
+    "file": "A06-unreferenced-object.pdf",
+    "length": 1243,
+    "expect": "isn't an attachment"
+  },
+  {
+    "name": "A07-attachment-renamed",
+    "file": "A07-attachment-renamed.pdf",
+    "length": 1243,
+    "expect": "an attachment Attest doesn't make"
+  },
+  {
+    "name": "A08-bytes-after-eof",
+    "file": "A08-bytes-after-eof.pdf",
+    "length": 1243,
+    "expect": "doesn't end with a cross-reference section"
+  },
+  {
+    "name": "A09-encrypt-in-trailer",
+    "file": "A09-encrypt-in-trailer.pdf",
+    "length": 1243,
+    "expect": "adds /Encrypt"
+  },
+  {
+    "name": "A10-xref-offset-off-by-one",
+    "file": "A10-xref-offset-off-by-one.pdf",
+    "length": 1243,
+    "expect": "differ"
+  },
+  {
+    "name": "A11-decode-params-on-file",
+    "file": "A11-decode-params-on-file.pdf",
+    "length": 1243,
+    "expect": "with /DecodeParms"
+  },
+  {
+    "name": "A12-related-files-on-spec",
+    "file": "A12-related-files-on-spec.pdf",
+    "length": 1243,
+    "expect": "an attachment with /RF"
+  },
+  {
+    "name": "A13-comment-in-catalog",
+    "file": "A13-comment-in-catalog.pdf",
+    "length": 1243,
+    "expect": "a comment"
+  },
+  {
+    "name": "A14-repeated-key-in-catalog",
+    "file": "A14-repeated-key-in-catalog.pdf",
+    "length": 1243,
+    "expect": "repeated key"
+  },
+  {
+    "name": "A15-two-evidence-files",
+    "file": "A15-two-evidence-files.pdf",
+    "length": 1243,
+    "expect": "two attachments named"
+  },
+  {
+    "name": "A16-root-points-elsewhere",
+    "file": "A16-root-points-elsewhere.pdf",
+    "length": 1243,
+    "expect": "changes which catalog"
+  },
+  {
+    "name": "A17-wrong-page-length",
+    "file": "A17-wrong-page-length.pdf",
+    "length": 1236,
+    "expect": "don't end where the evidence says"
+  },
+  {
+    "name": "A18-catalog-new-generation",
+    "file": "A18-catalog-new-generation.pdf",
+    "length": 1243,
+    "expect": ""
+  },
+  {
+    "name": "A19-hybrid-xref-stream",
+    "file": "A19-hybrid-xref-stream.pdf",
+    "length": 1243,
+    "expect": "adds /XRefStm"
+  },
+  {
+    "name": "A20-free-entry-after-pages",
+    "file": "A20-free-entry-after-pages.pdf",
+    "length": 1243,
+    "expect": "freed object"
+  },
+  {
+    "name": "A22-catalog-pages-pointed-elsewhere",
+    "file": "A22-catalog-pages-pointed-elsewhere.pdf",
+    "length": 1243,
+    "expect": ""
+  },
+  {
+    "name": "A23-annotation-object-numbered-low",
+    "file": "A23-annotation-object-numbered-low.pdf",
+    "length": 1243,
+    "expect": ""
+  }
+]
