@@ -3,6 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<!-- Only this file's own scripts run (by hash), and nothing in a file being checked can add one. -->
+<meta http-equiv="Content-Security-Policy" content="/*CSP*/">
 <title>Attest verifier</title>
 <!--
   Attest standalone verifier. Open source (MIT): github.com/DataHubz/attest-verifier. Built from src/ by build.mjs;
@@ -25,13 +27,14 @@
   .row { display: flex; gap: 10px; align-items: flex-start; padding: 6px 0; }
   .row + .row { border-top: 1px solid #f0f3f7; }
   .icon { flex: none; width: 22px; height: 22px; border-radius: 99px; color: #fff; font-weight: 700; font-size: 13px; display: flex; align-items: center; justify-content: center; margin-top: 1px; }
-  .ok { background: var(--ok); } .bad { background: var(--bad); } .warn { background: var(--warn); } .info { background: #94a3b8; }
+  .ok { background: var(--ok); } .bad { background: var(--bad); } .warn, .wait { background: var(--warn); } .info { background: #94a3b8; }
   .title { color: var(--ink); font-weight: 600; }
   .detail { font-size: 13px; color: var(--muted); word-break: break-all; }
   code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
   .verdict { margin-top: 22px; padding: 16px 18px; border-radius: 12px; font-weight: 600; color: var(--ink); }
   .verdict.ok { background: #ecfdf5; border: 1px solid #a7f3d0; }
   .verdict.bad { background: #fef2f2; border: 1px solid #fecaca; }
+  .verdict.partial { background: #fffbeb; border: 1px solid #fde68a; }
   input[type=text] { width: 100%; font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
   label { font-size: 13px; color: var(--muted); }
   button.link { font: inherit; color: var(--accent); background: none; border: 0; padding: 0; cursor: pointer; font-weight: 600; }
@@ -48,11 +51,11 @@
     <span class="small">Evidence files (attest-evidence-….json) download from each receipt, certificate, Proof Card and proof page. Add the original file or PDF to check it too. Nothing is uploaded.</span>
     <input id="file" type="file" multiple accept=".pdf,.json,application/pdf,application/json" hidden>
   </div>
-  <p style="margin-top:14px"><label for="rpc">Public node for the on-chain check (any node of the anchor's chain works):</label></p>
-  <input id="rpc" type="text" placeholder="read from the evidence">
+  <p style="margin-top:14px"><label for="rpc">Node for the on-chain checks (optional: any node of Horizen works, and every answer is checked against the registries and authority this verifier pins):</label></p>
+  <input id="rpc" type="text" placeholder="">
   <div id="out"></div>
   <h2>How this works</h2>
-  <p class="small">Every fingerprint is SHA-256. Passkey signatures are WebAuthn assertions over the SHA-256 of an exact statement. Issuers sign with P-256 keys: certificates as W3C Verifiable Credentials (JOSE), Proof Cards with selective disclosure (W3C Data Integrity, ecdsa-sd-2023). Zero-knowledge proofs are Groth16 over BN254. Each record, issuer key, revocation and status change is anchored on a public blockchain, under a value this page recomputes and reads from the chain. Every format and check is specified in FORMAT.md, so any SHA-256 tool, WebAuthn library, credential library, Groth16 verifier and Ethereum node can repeat them.</p>
+  <p class="small">Every fingerprint is SHA-256. Passkey signatures are WebAuthn assertions over the SHA-256 of an exact statement. Issuers sign with P-256 keys: certificates as W3C Verifiable Credentials (JOSE), Proof Cards with selective disclosure (W3C Data Integrity, ecdsa-sd-2023). Zero-knowledge proofs are Groth16 over BN254. Each record, issuer key, revocation and status change is anchored on Horizen, under a value this page recomputes and reads from the chain. The registries are open to anyone, so an anchor counts only when its wallet is one of Attest's: Attest's registry authority registers each one on chain, and this page pins that authority, the registries, the chain, the site where passkeys sign and every circuit's verification key, never taking them from a file it checks. A signed PDF counts only if nothing follows its signed pages but Attest's own attachments. Every format and check is specified in FORMAT.md, so any SHA-256 tool, WebAuthn library, credential library, Groth16 verifier and Ethereum node can repeat them.</p>
 </main>
 <script>/*LIBS*/</script>
 <script>/*MAIN*/</script>

@@ -75,9 +75,22 @@ function notices(metafile) {
 }
 const thirdParty = notices(libs.metafile).replace(/--/g, "- -");
 const safe = (js) => js.replace(/<\/script/gi, "<\\/script");
-const page = readFileSync("src/page.html", "utf8")
+let page = readFileSync("src/page.html", "utf8")
   .replace("/*LIBS*/", () => safe(libs.outputFiles[0].text))
   .replace("/*MAIN*/", () => safe(readFileSync("src/main.js", "utf8")))
   .replace("</html>", () => `<!--\nThird-party software bundled in this file, and its licenses:\n\n${thirdParty}\n-->\n</html>`);
+// Content Security Policy: only the two scripts above run, by hash. A file being checked can't add a script, an
+// event handler or a javascript: link, and the page can't be framed into sending data anywhere but a node.
+const scripts = [...page.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => `'sha256-${createHash("sha256").update(m[1]).digest("base64")}'`);
+const csp = [
+  "default-src 'none'",
+  `script-src ${scripts.join(" ")}`,
+  "style-src 'unsafe-inline'",
+  "connect-src https: http://localhost:* http://127.0.0.1:*",
+  "img-src data:",
+  "base-uri 'none'",
+  "form-action 'none'",
+].join("; ");
+page = page.replace("/*CSP*/", csp);
 writeFileSync("attest-verifier.html", page);
 console.log(`attest-verifier.html ${page.length} bytes, sha256 ${createHash("sha256").update(page).digest("hex")}`);
