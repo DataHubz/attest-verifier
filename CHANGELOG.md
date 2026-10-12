@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.4.1 (2026-10-12)
+
+- Proof Cards verify in Firefox: the issuer's key is a compressed P-256 point, which Firefox's WebCrypto refuses to import (raw or in SPKI). The verifier decompresses it, checking the point is on the curve, before importing it. 1.1.0 to 1.4.0 report a genuine card's issuer signature as invalid in Firefox; Chromium and WebKit were not affected.
+
 ## 1.4.0 (2026-10-12)
 
 A pinned trust root, and nothing taken on trust from the file being checked. TRUST.md describes the model and every attack it stops.
