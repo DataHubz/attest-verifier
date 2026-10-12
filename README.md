@@ -13,12 +13,14 @@ Every Attest signed copy carries this verifier as an attachment, together with t
 - **Agreement proofs:** the Groth16 proof; the people and completion day it reveals; the anchored root it proves against.
 - **Attest Analytics:** each sealed day's figures and summary as anchored; every figure recounted from the records it committed to, every root recomputed, every anchor read from the chain; or, for a party, that their agreement and signature are counted. The method is in [ANALYTICS.md](ANALYTICS.md).
 
+Every check runs under a trust root the verifier pins and never takes from a file: Horizen, Attest's registries, the registry authority that lists Attest's wallets, the site where passkeys sign, and each circuit's verification key. An anchor counts only when its wallet is one of Attest's, and a signed PDF counts only if nothing follows its signed pages but Attest's own attachments. [TRUST.md](TRUST.md) describes the model and the attacks it stops.
+
 Each format and check is specified in [FORMAT.md](FORMAT.md), so the checks can be reimplemented in any language.
 
 ## Use
 
 1. Download `attest-verifier.html` from the latest release, or save the copy attached to a signed PDF (any PDF reader lists its attachments).
-2. Open it in a current browser. It works from disk, offline, except the on-chain checks, which read from a public node of the record's chain. A node can be entered on the page.
+2. Open it in a current browser. It works from disk, offline, except the on-chain checks, which read from Horizen's public node. Any other node of Horizen can be entered on the page: it is only a source of data, checked against the pinned registries and authority.
 3. Drop a signed PDF, or an evidence file (`attest-evidence-….json`) downloaded from a record's page. Add the original file or the certificate PDF to check it too.
 
 The page makes no requests besides those on-chain reads, and the opt-in "Check for a newer version" button, which reads the release manifest from attest.datahubz.com or this repository.
@@ -33,7 +35,10 @@ The libraries it uses are bundled into the file at build time, from the exact ve
 npm ci
 npm run build
 shasum -a 256 attest-verifier.html
+npm test
 ```
+
+`npm test` cross-checks the Groth16 code against snarkjs and runs the signed-copy structure corpus in `test/structure/`: genuine copies, documents with names and attachments of their own, and one forged file per attack.
 
 The build is reproducible: the same sources and lockfile produce the same bytes, so the fingerprint matches the release's.
 
@@ -50,7 +55,7 @@ Each release lists the SHA-256 of `attest-verifier.html`. That fingerprint is al
 
 ## Security
 
-Report vulnerabilities to contact@datahubz.com. Fixes are published as new releases with a note in [CHANGELOG.md](CHANGELOG.md) naming the affected versions.
+The trust model and the attacks it stops are in [TRUST.md](TRUST.md). Report vulnerabilities to contact@datahubz.com. Fixes are published as new releases with a note in [CHANGELOG.md](CHANGELOG.md) naming the affected versions.
 
 ## License
 

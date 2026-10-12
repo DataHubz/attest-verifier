@@ -1,24 +1,28 @@
 # Attest evidence formats
 
-Every Attest record can be checked without Attest: its evidence holds everything needed, and anchors are read from a public node of the chain they are on.
+Every Attest record can be checked without Attest: its evidence holds everything needed, and anchors are read from a public node of Horizen. What a verifier must pin, and why, is in [TRUST.md](TRUST.md).
 
 | Format | Record | Where it comes from |
 | --- | --- | --- |
-| `attest.agreement_evidence.v1`, `v2`, `v3` | Signed agreement | Attached to every signed PDF |
-| `attest.receipt_evidence.v1` | Receipt, scan proof | `/api/evidence/<rcpt_ or zk_ id>`, the receipt's page |
-| `attest.certificate_evidence.v1` | Certificate | `/api/evidence/<cert_ id>`, the certificate's page |
-| `attest.card_evidence.v1` | Shared Proof Card | `/api/evidence/<shr_ id>`, the shared card's page |
-| `attest.proof_evidence.v1` | Agreement proof | `/api/evidence/<azk_ id>`, the proof's page |
-| `attest.analytics_evidence.v1` | Sealed Analytics days | The Analytics dashboard (full), or a completed agreement (inclusion) |
+| `attest.agreement_evidence.v1` to `v4` | Signed agreement | Attached to every signed PDF |
+| `attest.receipt_evidence.v1`, `v2` | Receipt, scan proof | `/api/evidence/<rcpt_ or zk_ id>`, the receipt's page |
+| `attest.certificate_evidence.v1`, `v2` | Certificate | `/api/evidence/<cert_ id>`, the certificate's page |
+| `attest.card_evidence.v1`, `v2` | Shared Proof Card | `/api/evidence/<shr_ id>`, the shared card's page |
+| `attest.proof_evidence.v1`, `v2` | Agreement proof | `/api/evidence/<azk_ id>`, the proof's page |
+| `attest.analytics_evidence.v1`, `v2` | Sealed Analytics days | The Analytics dashboard (full), or a completed agreement (inclusion) |
+
+The v2 formats (v4 for agreements), from October 12, 2026, name each anchor's registry (`contract`) and wallet (`from`) where a verifier needs the wallet to ask AttestRegistryV3. The checks are the same for every version, under the trust root below.
 
 Common definitions:
 
 - Fingerprints are SHA-256, lowercase hex. Text is UTF-8. Times are ISO 8601 in UTC.
 - `canonicalJson(x)`: JSON with object keys sorted, undefined members dropped, no whitespace.
-- `isAnchored(v)`: an `eth_call` to the registry contract with selector `0x4f0b5801` and `v` as a bytes32. It returns `(bool anchored, uint256 timestamp, address anchorer)`.
-- A Merkle anchor (`type: "merkle"`) is checked like agreement check 6 and 7 below: leaf `sha256("<receiptId>:<fingerprint>")`, sorted-pair SHA-256 up the path, the root in the transaction's `RootAnchored` log.
-- An event anchor (`type: "event"`) commits `sha256("attest.event.v1|" + eventId + "|" + fingerprint)` in its transaction's log.
-- A value anchor (`type: "value"`) commits the value itself in its transaction's log, and `isAnchored(value)` returns it.
+- **The trust root** (pinned by the verifier, never read from evidence): Horizen, chain id 26514; AttestRegistryV3 `0xF44Ed281005c7d506Dc50829a3E24655837FBF75`; AttestRegistryV2 `0x0C6a7918e2f8C28C4bb5Cf8d0f4CE27e9B30fa2A` (anchors until October 12, 2026); the registry authority `0x23ACBF52e76EE9502174442c87c3cD47c68f44e7`; the passkey relying party `attest.datahubz.com` and origin `https://attest.datahubz.com`; the Groth16 verification keys of Attest's circuits.
+- `anchoredAt(w, v)` on AttestRegistryV3 (selector `0xf8c2919d`) returns when wallet `w` anchored `v`, or 0. `isAnchored(v)` on AttestRegistryV2 (selector `0x4f0b5801`) returns `(bool anchored, uint256 timestamp, address anchorer)`.
+- **An Attest anchor** of `v` by wallet `w`: `anchoredAt(w, v) > 0` on V3, or `isAnchored(v)` on V2 with anchorer `w`; and `w` is Attest's: `registeredAt(w) > 0` on V3 (selector `0xaaea3d9c`), with `revokedAt(w)` (selector `0x1947aee4`) zero or after the anchor. The registries are open to any wallet: an anchor from an unregistered wallet is not Attest's.
+- A Merkle anchor (`type: "merkle"`): leaf `sha256("<receiptId>:<fingerprint>")`, sorted-pair SHA-256 up the path to the root, which must be an Attest anchor; its transaction (`txHash`) names the wallet and records the root in its log (V3 `Anchored`, the value in `topics[3]`; V2 `RootAnchored`, the root at the start of `data`).
+- An event anchor (`type: "event"`): `sha256("attest.event.v1|" + eventId + "|" + fingerprint)`, an Attest anchor from the wallet in `from`.
+- A value anchor (`type: "value"`): the value itself, an Attest anchor from the wallet in `from` (or found on V2).
 - `P` is the BN254 scalar field order, `21888242871839275222246405745257275088548364400416034343698204186575808495617`.
 
 ## Values anyone can recompute
@@ -32,6 +36,8 @@ Organizations anchor these from their own wallet, so a verifier asks the chain d
 | A Proof Card's n-th status change | `sha256("attest.card.status.v1|" + cardId + "|" + n + "|" + state)`, state `revoked`, `suspended` or `active`, n from 1 |
 | A published JSON-LD context | `sha256("attest.context.v1|" + url + "|" + canonicalJson(document))`, from Attest's platform organization |
 | A signed copy's visible pages | `sha256("attest.signed_copy.v1|" + agreementId + "|" + variant + "|" + sha256(visible bytes))`, variant `full` or `pages`, from the wallet that anchored the agreement's signed state |
+| A completed agreement | `sha256("attest.agreement.v1|" + agreementId + "|" + signedState.sha256 + "|" + S)`, from the creator's wallet, where `S` is the SHA-256 of the JSON array of `[lowercase email, statement, publicKeySpki, alg, authenticatorData, clientDataJSON, signature]` for every signer (missing values as `""`, a missing alg as `null`), sorted by email |
+| A sealed Analytics day | `sha256("attest.analytics.v1|" + day + "|" + scope + "|" + sha256)`, with `day` and `scope` from the anchored summary, from the wallet that recorded its receipt |
 
 The wallet that anchored an organization's issuer key is that organization's wallet; certificates, revocations and status changes anchored by the same wallet are its own. The issuer key's anchor time shows when the key was public: a key substituted later carries a later time and a different value.
 
@@ -99,12 +105,13 @@ online              live certificate URL
 
 1. **Document.** `SHA-256(original-document.pdf) == document.sha256`.
 2. **Entries.** For each signer with entries: `SHA-256(entries) == entriesSha256`.
-3. **Statement.** Each `statement` parses as JSON with `documentSha256 == document.sha256` and, when the signer has entries, `fieldsSha256 == entriesSha256`.
-4. **Passkey signature (WebAuthn).** Decode `clientDataJSON`: `type == "webauthn.get"`, `challenge == base64url(SHA-256(statement))`, `origin == webauthn.origin`. `authenticatorData` begins with `SHA-256(webauthn.rpId)`, and its flags byte (offset 32) has user present (0x01) and user verified (0x04). The signature verifies over `authenticatorData || SHA-256(clientDataJSON)` with `passkey.publicKeySpki`. For ES256 the signature is DER-encoded and is converted to raw `r || s` for WebCrypto.
-5. **Signed state.** `SHA-256(signedState.message) == signedState.sha256`, and the message (JSON) lists `document.sha256` and every signer with their entries fingerprint.
+3. **Statement.** Each `statement` parses as JSON with `agreementId`, `documentSha256 == document.sha256`, `signer` (the signer's lowercase email), the signed state's `title`, the `signedAt` the signed state lists for that signer and, when the signer has entries, `fieldsSha256 == entriesSha256`. The names shown are the statements' `name`.
+4. **Passkey signature (WebAuthn), on Attest's site.** Decode `clientDataJSON`: `type == "webauthn.get"`, `challenge == base64url(SHA-256(statement))`, `origin == "https://attest.datahubz.com"` (pinned, whatever `webauthn` says), not `crossOrigin`. `authenticatorData` begins with `SHA-256("attest.datahubz.com")`, and its flags byte (offset 32) has user present (0x01) and user verified (0x04). The signature verifies over `authenticatorData || SHA-256(clientDataJSON)` with `passkey.publicKeySpki`. For ES256 the signature is DER-encoded and is converted to raw `r || s` for WebCrypto.
+5. **Signed state.** `SHA-256(signedState.message) == signedState.sha256`, and the message (JSON) names `agreementId`, `document.sha256` and exactly the evidence's signers, each with their `signedAt` and entries fingerprint.
 6. **Merkle path.** `node = SHA-256("<anchor.receiptId>:<signedState.sha256>")` (equals `anchor.leaf`). For each sibling in `anchor.merkleProof`: `node = SHA-256(min(node, sibling) || max(node, sibling))`, comparing the 32-byte values as lowercase hex strings and concatenating the bytes. The result equals `anchor.merkleRoot`. Batches with a single record have an empty path and `merkleRoot == leaf`.
-7. **On chain.** `eth_getTransactionReceipt(anchor.txHash)` from any node of `anchor.chainId` has status `0x1` and a log emitted by `anchor.contract` whose `data` begins with `anchor.merkleRoot` (the `RootAnchored` event). The block's timestamp is when it was sealed.
-8. **Zero-knowledge proofs.** `groth16 verify(verificationKey, publicSignals, proof)`, for example `npx snarkjs groth16 verify vk.json public.json proof.json`. Each proof is also verified on zkVerify (`zkverify.txHash`).
+7. **On chain.** `eth_getTransactionReceipt(anchor.txHash)` from a node of Horizen (chain 26514; `anchor.chainId` must be 26514) has status `0x1`, was sent to one of Attest's registries, and its log records `anchor.merkleRoot`. Its sender `W` must be an Attest wallet, and the root an Attest anchor by `W` (see the definitions above). The anchor's time is when the signed state was recorded.
+8. **Zero-knowledge proofs.** `groth16 verify(verificationKey, publicSignals, proof)` with the verification key Attest publishes for the circuit (the verifier carries its own copy and ignores the one in the evidence), for example `npx snarkjs groth16 verify vk.json public.json proof.json`. The root it proves against is an Attest anchor (`proofs[i].root.anchor` names its wallet). Each proof is also verified on zkVerify (`zkverify.txHash`).
+9. **Attest's anchor of the agreement.** The agreement value (see "Values anyone can recompute") is an Attest anchor by `W`. A receipt proves only that a fingerprint was recorded, by any account; this value is made only by Attest's completion of this agreement, and it commits to every signer's statement, passkey public key and signature.
 
 ## Format v3 (`attest.agreement_evidence.v3`)
 
@@ -118,7 +125,12 @@ visibleCopy.sha256       SHA-256 of those bytes
 
 The signed copy is the visible pages, saved with a classic cross-reference table, followed by a PDF incremental update (ISO 32000, 7.5.6) that adds the three attachments and a catalog naming them. The visible pages' bytes are never rewritten.
 
-9. **Visible pages.** `SHA-256(first visibleCopy.byteLength bytes of the PDF) == visibleCopy.sha256`, and `isAnchored(sha256("attest.signed_copy.v1|" + agreementId + "|" + variant + "|" + visibleCopy.sha256))` is true, from the wallet that sent `anchor.txHash`. A PDF whose pages were changed, or rebuilt around the same attachments, fails: its first bytes hash differently, and editing the evidence to match leaves a value that was never anchored.
+10. **Visible pages.** `SHA-256(first visibleCopy.byteLength bytes of the PDF) == visibleCopy.sha256`, and the signed copy value is an Attest anchor by `W`. A PDF whose pages were changed, or rebuilt around the same attachments, fails: its first bytes hash differently, and editing the evidence to match leaves a value that was never anchored.
+11. **Nothing after the pages but Attest's attachments.** The bytes after the visible pages are exactly one incremental update: its cross-reference section lists exactly the objects between the pages and it, all in use; its trailer has only `/Size`, `/Root` (the pages' catalog), `/Info` and `/ID` (the pages' own) and `/Prev` (the pages' cross-reference table); `startxref` and `%%EOF` end the file. Its objects are the catalog (same number, every entry as before, plus `/Names` with `/EmbeddedFiles`, every earlier name kept, and `/AF` listing the attachments after any earlier entries), one name tree leaf, and for each attachment a file specification (`/Type /Filespec`, `/F` and `/UF` equal, optional `/Desc`, `/AFRelationship /Data`, `/EF`) and an embedded file stream (`/Type /EmbeddedFile`, optional `/Subtype`, optional `/Filter /FlateDecode`, `/Length`, `/Params << /Size >>`). The attachments are `attest-evidence.json`, `original-document.pdf` and `attest-verifier.html`, each at most once. Anything else (another update, a page redefined, a script or open action, an annotation, a comment) means the file was changed after it was sealed: a PDF reader could show it over the signed pages. The signed pages themselves can still be saved exactly as sealed.
+
+## Format v4 (`attest.agreement_evidence.v4`)
+
+Signed copies made from 2026-10-12. Format v3, with each proof's `root` (`value`, `anchor` with `txHash` and `from`) and the check list above. Anchors may be on AttestRegistryV3.
 
 Copies in formats v1 and v2 authenticate the original document inside them, not their visible pages.
 
@@ -135,7 +147,9 @@ proofs[]: id, revealed, zkverifyStatus, zkverifyTxHash
 verify   live certificate URL
 ```
 
-Checks 3 and 4 apply (with `consentJson` as the statement and the WebAuthn origin taken from `verify`). The original document can be checked against `documentSha256` by whoever holds it.
+Checks 3, 4 and 9 apply (with `consentJson` as the statement); the sender of `anchor.txHash`, which must be a transaction to one of Attest's registries, is `W`. The original document can be checked against `documentSha256` by whoever holds it.
+
+Agreements completed in September 2026 have signers with no passkey evidence (no statement, key or assertion): they were signed before Attest's signers used passkeys. Check 9 commits to that, so a verifier reports such a signer as having no passkey signature, with Attest's anchored record as the evidence, rather than as a failure.
 
 # Receipts (`attest.receipt_evidence.v1`)
 
@@ -148,8 +162,8 @@ online, verifier
 ```
 
 1. **Content.** Optionally, `SHA-256(file) == receipt.sha256`.
-2. **Anchor.** The Merkle anchor for `receipt.sha256` is in the transaction's log.
-3. **Scan proof** (`security_scan_proof_v2`). Groth16 verifies; public signals are `[valid, scanCommitment, proofType, minSecurityScore, maxCriticalAllowed, maxHighAllowed]`; `receipt.sha256 == sha256("attest.scan.v2|" + scanCommitment)`; the predicate holds when `valid == "1"`.
+2. **Anchor.** The Merkle anchor for `receipt.sha256` is an Attest anchor. `claim`, `kind` and `createdAt` are the account's own description, not covered by the anchor: a verifier shows the anchor's time and labels the description as the account's.
+3. **Scan proof** (`security_scan_proof_v2`). Groth16 verifies with the circuit's published key; public signals are `[valid, scanCommitment, proofType, minSecurityScore, maxCriticalAllowed, maxHighAllowed]`; `receipt.sha256 == sha256("attest.scan.v2|" + scanCommitment)`; the predicate holds when `valid == "1"`.
 
 # Certificates (`attest.certificate_evidence.v1`)
 
@@ -166,11 +180,12 @@ chain                chainId, rpc, contract
 
 1. **Content.** `sha256(canonicalJson(content)) == contentSha256`.
 2. **Signers.** Each `consentJson` names `certificate == id` and `contentSha256`; the passkey assertion over it is valid (as agreement check 4).
-3. **Issuer key.** `isAnchored` of the issuer key value (see above) gives its time and the organization's wallet.
+3. **Issuer key.** The issuer key value (see above) is an Attest anchor, from the wallet named in `issuer.keyAnchor.from`: that is the organization's wallet. The DID must be one Attest issues (`did:web:attest.datahubz.com:orgs:<slug>`).
 4. **Issuer signature.** `vcJwt` is a JWS (ES256) by the key `kid` in the DID document; its payload names `issuer.id == did` and `credentialSubject.contentSha256 == contentSha256`.
 5. **PDF.** Optionally, `SHA-256(pdf) == pdfSha256`.
-6. **Anchor.** `sha256("attest.certificate.v1|" + id + "|" + pdfSha256 + "|" + sha256(vcJwt))` is in the anchor's transaction, sent by the same wallet that anchored the issuer key.
-7. **Status.** `isAnchored(sha256("attest.certificate.revoked.v2|" + id))` from that wallet means revoked, at its time.
+6. **Anchor.** `sha256("attest.certificate.v1|" + id + "|" + pdfSha256 + "|" + sha256(vcJwt))` is an Attest anchor by the wallet that anchored the issuer key.
+7. **Status.** `sha256("attest.certificate.revoked.v2|" + id)` anchored by that wallet means revoked, at its time.
+The title, issuer name and validity shown are the signed content's and credential's. Each signer's statement and passkey key are named in the credential's `credentialSubject.signatures` (`statementSha256`, `publicKeySha256`).
 8. **Findings closure.** Groth16 verifies; `publicSignals[0] == commitment`; `publicSignals[1] == sha256("attest.certificate.findings|" + id) mod P`; the commitment, as 64 hex digits, equals `content.findingsClosure.commitment`.
 
 # Proof Cards (`attest.card_evidence.v1`)
@@ -195,7 +210,8 @@ chain                chainId, rpc, contract
 4. **Issuer signature.** The credential verifies with `ecdsa-sd-2023` using the DID document's Multikey; each status list credential verifies with `ecdsa-rdfc-2019`; the card's bit is clear in each list.
 5. **Status list anchors.** `sha256(canonicalJson(list credential))` is in its anchor.
 6. **Issuance anchor.** The base signature is the first element of the CBOR array in the proof value (multibase `u`, base64url, after the 3-byte header `d9 5d 01`); its SHA-256 is in the issuance anchor.
-7. **Current status.** For n = 1, 2, ...: whichever of the three states has `isAnchored` true from the issuer's wallet is the state after the n-th change; stop at the first n with none. No change means active.
+7. **Current status.** For n = 1, 2, ...: whichever of the three states is anchored by the issuer's wallet is the state after the n-th change; stop at the first n with none. No change means active.
+All anchors (issuer key, context, status lists, issuance, status changes) must be Attest anchors.
 
 # Agreement proofs (`attest.proof_evidence.v1`)
 
@@ -208,9 +224,9 @@ chain                chainId, rpc, contract
 
 Public signals: `agreement_membership` is `[root, emailField(party), day, identitySalt]`; `agreement_with_party` is `[root, emailField(party), emailField(counterparty), day, identitySalt]`, with `emailField(e) = sha256(lowercase e) mod P`, `identitySalt = sha256("attest.identity.v1") mod P`, and `day` the UTC day number of the completion.
 
-1. **Proof.** Groth16 verifies with the verification key.
-2. **What it reveals.** The email fields, the day and the salt match the public signals.
-3. **Root.** `isAnchored(root)`: the root commits to every completed agreement on Attest.
+1. **Proof.** Groth16 verifies with the circuit's published verification key (never the one in the evidence).
+2. **What it reveals.** The email fields, the day and the salt match the public signals. The statement shown is built from these checked values.
+3. **Root.** The root is an Attest anchor (from the wallet in `root.anchor.from`): it commits to every completed agreement on Attest.
 4. **zkVerify.** The proof is also verified on zkVerify (`zkverify.txHash`).
 
 # Analytics (`attest.analytics_evidence.v1`)
@@ -227,9 +243,9 @@ snapshots[]          id, day, scope ("platform" or "organization"), canonical (t
 chain                chainId, rpc, contract
 ```
 
-1. `sha256(canonical) == sha256`, anchored.
+1. `sha256(canonical) == sha256`; its receipt is an Attest anchor by wallet `W`; and the Analytics day value (`attest.analytics.v1`, with the summary's own `day` and `scope`) is an Attest anchor by `W`, so a receipt someone else recorded for the same fingerprint doesn't count.
 2. `sha256(commitments) == summary.commitmentsSha256`; `sha256(figures) == summary.figuresSha256`.
-3. Full: for each figure, the root of its leaves equals its commitment, and their number equals `figures.activity[figure]`; each anchor leaf is a transaction on the registry mined that day.
+3. Full: for each figure, the root of its leaves equals its commitment, and their number equals `figures.activity[figure]`; each anchor leaf is a transaction to one of Attest's registries, mined that day.
 4. Inclusion: `sha256("attest.analytics.leaf.v1|" + figure + "|" + record.id + "|" + salt) == leaf`, and folding `path` (sorted pairs) reaches `commitments[figure]`.
 
 ## Compatibility
