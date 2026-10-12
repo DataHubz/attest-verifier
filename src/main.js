@@ -2,8 +2,8 @@
 // This file's version, and the evidence formats it reads. Every release reads every earlier format, so an
 // older record verifies with any newer verifier; a record in a newer format is reported as such.
 const VERIFIER = {
-  version: "1.4.2",
-  formats: { agreement: [1, 2, 3, 4], receipt: [1, 2], certificate: [1, 2], card: [1, 2], proof: [1, 2], analytics: [1, 2] },
+  version: "1.5.0",
+  formats: { agreement: [1, 2, 3, 4, 5], receipt: [1, 2], certificate: [1, 2], card: [1, 2], proof: [1, 2], analytics: [1, 2] },
   repo: "https://github.com/DataHubz/attest-verifier",
   latest: ["https://attest.datahubz.com/attest-verifier/latest.json", "https://raw.githubusercontent.com/DataHubz/attest-verifier/main/latest.json"],
 };
@@ -24,6 +24,8 @@ const TRUST = {
   registry: "0xf44ed281005c7d506dc50829a3e24655837fbf75", // AttestRegistryV3: values per wallet, and Attest's wallets
   registryV2: "0x0c6a7918e2f8c28c4bb5cf8d0f4ce27e9b30fa2a", // AttestRegistryV2: anchors made until October 12, 2026
   authority: "0x23acbf52e76ee9502174442c87c3cd47c68f44e7",
+  // Attest's platform organization: anchors every verifier build Attest has served, and the JSON-LD contexts.
+  platform: "0xdea7b859dcbd34deb8dc910b5b36d6acdbec6f3a",
   webauthn: { rpId: "attest.datahubz.com", origin: "https://attest.datahubz.com" },
 };
 const REGISTRIES = [TRUST.registry, TRUST.registryV2];
@@ -711,6 +713,37 @@ function render(kind, title, sub, verified) {
   }
 }
 
+/**
+ * A file that carries a verifier tells its reader to open it, so the verifier must be one Attest published: every
+ * build Attest has served is anchored by its platform organization as
+ * sha256("attest.verifier.v1|" + version + "|" + sha256(file)), the version read from the build's own declaration.
+ */
+const SAFE_VERIFIER = "1.4.2"; // earlier releases have weaknesses fixed since (CHANGELOG.md)
+async function checkAttachedVerifiers(list) {
+  let url;
+  try { url = await node(); } catch (e) {
+    add("warn", "The verifier attached to this file couldn't be checked here", `${esc(e.message)}. Check your connection, or enter another public node of ${TRUST.chain} above, then drop the file again.`);
+    return;
+  }
+  const older = (a, b) => { const x = a.split(".").map(Number), y = b.split(".").map(Number); for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] < y[i]; return false; };
+  for (const bytes of list) {
+    const sha = await sha256hex(bytes);
+    const m = /const VERIFIER = \{\s*version: "(\d+\.\d+\.\d+)"/.exec(latin1.decode(bytes));
+    const version = m ? m[1] : "unversioned";
+    let r;
+    try { r = await attested(url, await sha256hex(`attest.verifier.v1|${version}|${sha}`), TRUST.platform); } catch (e) {
+      add("warn", "The verifier attached to this file couldn't be checked here", esc(e.message));
+      continue;
+    }
+    if (!r.anchored || !r.ok) {
+      add("bad", "A file attached to this PDF isn't one Attest published", `Its SHA-256 ${mono(sha)} isn't anchored by Attest's platform wallet ${mono(TRUST.platform)}${r.anchored ? `: ${esc(r.why)}` : ""}. Don't open it: a changed verifier, or any file a reader can open, can show any result. Check files here, or with a release from ${esc(VERIFIER.repo.replace(/^https:\/\//, ""))}.`);
+      continue;
+    }
+    add("ok", `The verifier attached to this file is Attest's ${version === "unversioned" ? "first build" : `release ${version}`}`, `Its SHA-256 ${mono(sha)} was anchored by Attest's platform wallet ${when(r.at)}.`);
+    if (version === "unversioned" || older(version, SAFE_VERIFIER)) add("info", "That verifier has been updated since", `Later releases fix weaknesses found in it (CHANGELOG.md at ${esc(VERIFIER.repo.replace(/^https:\/\//, ""))}). Check this file here, or with the latest release, rather than with the attached copy.`);
+  }
+}
+
 /** The evidence's kind and format version, or null if it isn't Attest evidence. */
 function formatOf(ev) {
   const m = ev && typeof ev.format === "string" && /^attest\.(agreement|receipt|certificate|card|proof|analytics)_evidence\.v(\d+)$/.exec(ev.format);
@@ -785,7 +818,8 @@ async function verifyAgreement(ev, files) {
   if (original) {
     const h = await sha256hex(original);
     add(h === docSha ? "ok" : "bad", h === docSha ? `The original document${files.outer ? " inside" : ""} is exactly the one signed` : `The original document${files.outer ? " inside" : ""} is not the one signed`, `SHA-256 ${mono(h)}`);
-  } else if (files.outer) add("warn", "The original document isn't in this file", "A signed copy carries it as original-document.pdf.");
+  } else if (files.outer && ev.document && ev.document.file === null && !ev.visibleCopy) add("info", "The document isn't in this certificate", `It stays with the parties, whose signed copy carries it. Its fingerprint is ${mono(docSha)}.`);
+  else if (files.outer) add("warn", "The original document isn't in this file", "A signed copy carries it as original-document.pdf.");
   else add("info", "Drop the original document too, to check it is the one signed", `Its fingerprint is ${mono(docSha)}.`);
 
   // 3. Each signer: the statement their passkey signed, their entries, and the signature.
@@ -874,7 +908,8 @@ async function checkVisiblePages(ev, files, id, wallet) {
     return;
   }
   if (!v) {
-    add("warn", "The pages you see aren't covered by this copy's evidence", "This copy was made before October 10, 2026: its evidence authenticates the original document inside it, not the visible pages. Compare the pages with the original inside, or drop the file on attest.datahubz.com/verify, which checks the whole file against its recorded fingerprint.");
+    if (!files.pdf) add("warn", "This PDF's own pages aren't checked", "It's the agreement's certificate, made when it was downloaded: the record below is verified, not the pages of this PDF. Compare the names, dates and fingerprints on its pages with the ones shown here. The signed pages are in the parties' signed copy.");
+    else add("warn", "The pages you see aren't covered by this copy's evidence", "This copy was made before October 10, 2026: its evidence authenticates the original document inside it, not the visible pages. Compare the pages with the original inside, or drop the file on attest.datahubz.com/verify, which checks the whole file against its recorded fingerprint.");
     return;
   }
   const len = Number(v.byteLength);
@@ -896,6 +931,193 @@ async function checkVisiblePages(ev, files, id, wallet) {
     return;
   }
   if (anchored) add("ok", "The pages you see are the copy sealed when the agreement completed", `${v.variant === "pages" ? "The signed pages, without certificate pages" : "The signed pages with their certificate pages"}: SHA-256 ${mono(h)}. Nothing follows them but the evidence, the original document and this verifier, attached as files.`);
+}
+
+// ===================================================================================== agreements, v5
+/**
+ * Protocol v5 (agreement evidence v5): statements v3 name each signer by a salted commitment, never an email; the
+ * signed state v3 lists each commitment with the SHA-256 of its statement; Attest's agreement anchor v2 also binds the
+ * completion details (field layout, verification code, completion time, audit trail), so this page re-makes the visible
+ * pages with renderer v2 and compares them byte for byte.
+ */
+async function verifyAgreementV5(ev, files) {
+  const id = str(ev.agreementId);
+  const docSha = str(ev.document && ev.document.sha256);
+  const signers = Array.isArray(ev.signers) ? ev.signers : [];
+  // The certificate anyone may download carries the same record without the document, the entries or the audit trail.
+  const certificate = Boolean(ev.visibleCopy && ev.visibleCopy.variant === "certificate");
+  if (!/^agr_[0-9A-Za-z_-]+$/.test(id) || !isHex64(docSha) || !signers.length || typeof ev.details !== "string") {
+    add("bad", "This isn't a complete agreement record", "It names no agreement, document, signers or completion details.");
+    return render("agreement", "Signed agreement");
+  }
+  // 1. The signed state v3.
+  const ss = ev.signedState || {};
+  const stateSha = isHex64(ss.sha256) ? ss.sha256 : null;
+  let state = null;
+  const statementOf = new Map();
+  for (const s of signers) { let st = null; try { st = JSON.parse(s.statement); } catch {} statementOf.set(s, st); }
+  if (typeof ss.message === "string") {
+    let m = null;
+    try { m = JSON.parse(ss.message); } catch {}
+    const h = await sha256hex(ss.message);
+    let shape = m && m.kind === "attest.agreement_completion.v3" && m.agreementId === id && m.documentSha256 === docSha && Array.isArray(m.signers) && m.signers.length === signers.length;
+    if (shape) {
+      for (const s of signers) {
+        const x = m.signers.find((y) => y.signer === s.commitment);
+        if (!x || typeof s.statement !== "string" || x.statementSha256 !== (await sha256hex(s.statement))) { shape = false; break; }
+      }
+    }
+    if (h === stateSha && shape) { state = m; add("ok", "The signed state names this agreement, its document and every signer's statement", `SHA-256 ${mono(h)}`); }
+    else add("bad", "The signed state doesn't match this agreement", h !== stateSha ? `It hashes to ${mono(h)}, not to the anchored ${mono(stateSha || "")}.` : "It names a different agreement, document, set of signers or statements.");
+  } else add("bad", "The signed state is missing", "");
+  const title = state ? str(state.title) : null;
+
+  // 2. The completion details, as Attest's anchor binds them.
+  let details = null;
+  try { details = JSON.parse(ev.details); } catch {}
+  const detailsSha = await sha256hex(ev.details);
+  const commitments = signers.map((s) => s.commitment).sort().join("\n");
+  const detailsOk = details && canonicalJson(details) === ev.details && isHex64(details.trailSha256) && details.renderer === "attest.render.v2" && Array.isArray(details.signers) && [...details.signers].sort().join("\n") === commitments && Array.isArray(details.fields) && details.fields.every((f) => Array.isArray(f) && f.length === 8 && details.signers.includes(f[7]));
+  if (!detailsOk) add("bad", "The completion details don't match this agreement", "They name other signers, or aren't in the form Attest anchors.");
+  // The audit trail, which the details name by its SHA-256 (a signed copy carries it; the certificate doesn't).
+  let trail = null;
+  if (detailsOk && typeof ev.trail === "string") {
+    if ((await sha256hex(ev.trail)) === details.trailSha256) { try { trail = JSON.parse(ev.trail); } catch {} }
+    if (!Array.isArray(trail)) { trail = null; add("bad", "The audit trail isn't the one Attest anchored", "Its SHA-256 isn't the one the completion details name."); }
+  } else if (ev.trail != null) add("bad", "The audit trail isn't readable", "");
+
+  // 3. The original document inside.
+  const original = files.pdf;
+  if (original) {
+    const h = await sha256hex(original);
+    add(h === docSha ? "ok" : "bad", h === docSha ? `The original document${files.outer ? " inside" : ""} is exactly the one signed` : `The original document${files.outer ? " inside" : ""} is not the one signed`, `SHA-256 ${mono(h)}`);
+  } else if (files.outer && certificate) add("info", "The document isn't in this certificate", `It stays with the parties, whose signed copy carries it. Its fingerprint is ${mono(docSha)}.`);
+  else if (files.outer) add("warn", "The original document isn't in this file", "A signed copy carries it as original-document.pdf.");
+  else add("info", "Drop the original document too, to check it is the one signed", `Its fingerprint is ${mono(docSha)}.`);
+
+  // 4. Each signer: their statement (v3), their entries and where they appear, and their passkey signature.
+  const names = [];
+  const entries = {};
+  let entriesComplete = true;
+  for (const s of signers) {
+    const st = statementOf.get(s);
+    const who = st && typeof st.name === "string" && st.name ? st.name : "A signer";
+    names.push(who);
+    if (!st || !s.webauthnAssertion || !s.passkey || !isHex64(s.commitment)) { add("bad", `${who}: no signature evidence`, ""); continue; }
+    const inState = state ? state.signers.find((x) => x.signer === s.commitment) : null;
+    if (s.entries != null) {
+      const eh = await sha256hex(s.entries);
+      add(eh === s.entriesSha256 ? "ok" : "bad", `${who}: the entries are the ones they signed`, `Entries SHA-256 ${mono(eh)}`);
+      try { for (const [fid, , value] of JSON.parse(s.entries)) entries[fid] = value; } catch { entriesComplete = false; }
+    } else if (s.entriesSha256) entriesComplete = false;
+    // Where their entries appear: the layout their statement signed is their fields in the anchored details.
+    const mine = detailsOk ? details.fields.filter((f) => f[7] === s.commitment).map((f) => [f[0], f[1], f[2], f[3], f[4], f[5], f[6]]).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)) : null;
+    const layoutOk = mine && st.layoutSha256 === (await sha256hex(JSON.stringify(mine)));
+    const fields = (st.fieldsSha256 ?? null) === (s.entriesSha256 ?? null) && (!state || (inState && (inState.fieldsSha256 ?? null) === (st.fieldsSha256 ?? null)));
+    const named = st.v === 3 && st.agreementId === id && st.documentSha256 === docSha && st.signer === s.commitment && st.title === title && fields && layoutOk && (!state || (inState && st.signedAt === inState.signedAt));
+    add(named ? "ok" : "bad", `${who}: the signed statement names this agreement, its document${s.entriesSha256 ? ", their entries and where they appear" : ""}`, `${esc(str(st.statement))}${st.encryptionKey ? " It also commits to their own encryption key." : ""} No email appears in it: the signer is named by a salted commitment.`);
+    try {
+      const w = await signerPasskeyCheck(s);
+      add(w.ok ? "ok" : "bad", `${who}: passkey signature valid`, w.ok ? `Signed ${when(st.signedAt)} on ${esc(TRUST.webauthn.origin)}, with the signer present and verified on their device` : esc(JSON.stringify(w.parts)));
+    } catch (e) { add("bad", `${who}: passkey signature could not be checked`, esc(e.message)); }
+  }
+
+  // 5. The anchors: the signed state's receipt, then Attest's agreement anchor v2 (signatures and details).
+  const an = ev.anchor;
+  let wallet = null, stateAt = null, anchorTx = null;
+  if (stateSha && an && an.merkleRoot) {
+    const r = await checkAnchor("The signed state", { ...an, type: "merkle" }, stateSha);
+    if (r) { wallet = r.wallet; stateAt = r.at; anchorTx = isTx(an.txHash) ? an.txHash : null; }
+  } else add(an ? "bad" : "wait", an ? "The anchor's Merkle path is missing" : "The signed state isn't anchored yet", an ? "" : "Anchoring follows within minutes.");
+  let agreementAt = null;
+  if (stateSha && wallet) {
+    const rows = signers
+      .map((s) => [String(s.commitment), s.statement ?? "", (s.passkey && s.passkey.publicKeySpki) ?? "", (s.passkey && s.passkey.alg) ?? null, (s.webauthnAssertion && s.webauthnAssertion.authenticatorData) ?? "", (s.webauthnAssertion && s.webauthnAssertion.clientDataJSON) ?? "", (s.webauthnAssertion && s.webauthnAssertion.signature) ?? ""])
+      .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+    const value = await sha256hex(`attest.agreement.v2|${id}|${stateSha}|${await sha256hex(JSON.stringify(rows))}|${detailsSha}`);
+    const r = await onChain("Attest's record of this agreement, its signatures and what its signed copy shows", value, {
+      wallet,
+      missing: "bad",
+      missingDetail: "Attest anchors every completed agreement, with every signer's statement, passkey key and signature and the completion details, from the wallet that anchored its signed state. This one isn't anchored: either the evidence was changed, or the agreement was completed in the last few minutes and its anchor is on its way (check again shortly).",
+    });
+    if (r) agreementAt = r.at;
+  }
+
+  // 6. The visible pages, re-made here from what was signed.
+  if (files.outer) await checkVisiblePagesV5(ev, files, { id, title, stateSha, anchorTx, wallet, details: detailsOk ? details : null, trail, signers, statementOf, state, entries, entriesComplete, original });
+  else if (ev.visibleCopy && isHex64(ev.visibleCopy.sha256)) add("info", "Drop the signed PDF itself to check the pages you see", `Its visible pages have SHA-256 ${mono(ev.visibleCopy.sha256)}.`);
+
+  // 7. Zero-knowledge proofs about this agreement.
+  for (const p of ev.proofs || []) {
+    if (!p || !p.proof) continue;
+    await checkAgreementProof({ ...p, revealed: p.revealed || {} }, p.root || null, `Proof ${str(p.id)}`);
+  }
+  const code = detailsOk && typeof details.verifyCode === "string" && /^[0-9A-Z]{8}$/.test(details.verifyCode) ? `ATT-${details.verifyCode.slice(0, 4)}-${details.verifyCode.slice(4)}` : null;
+  render(
+    "agreement",
+    title || "Signed agreement",
+    [names.length ? `Signed by ${esc(names.join(", "))}` : "", detailsOk ? `completed ${when(details.completedAt)}` : "", code ? `verification code ${esc(code)}` : "", stateAt || agreementAt ? `anchored ${when(stateAt || agreementAt)}` : ""].filter(Boolean).join(" · "),
+    certificate && files.outer ? "Verified: this certificate's pages, re-made here from what was signed, every signer's passkey signature, and Attest's record of the agreement, anchored on the public blockchain." : original ? (files.outer ? "Verified: the pages you see, re-made here from what was signed, the document, every signer's passkey signature and entries, and Attest's record of the agreement, anchored on the public blockchain." : null) : "Verified: every signer's passkey signature and entries, and Attest's record of the agreement, anchored on the public blockchain. Drop the original document too, to check it is the one signed.",
+  );
+}
+
+/**
+ * A v5 signed copy's visible pages must be exactly what renderer v2 makes from the original document, the completion
+ * details, every signer's entries and name, the signed state and its anchor transaction. A party's browser made them
+ * when it sealed the copy; this page makes them again and compares every byte.
+ */
+async function checkVisiblePagesV5(ev, files, c) {
+  const v = ev.visibleCopy;
+  const len = v ? Number(v.byteLength) : NaN;
+  if (!v || !(Number.isInteger(len) && len > 0 && len < files.outer.length) || !["full", "pages", "certificate"].includes(v.variant) || v.renderer !== "attest.render.v2") { add("bad", "The pages you see are not the signed copy", "The file's structure doesn't match its evidence."); return; }
+  const certificate = v.variant === "certificate";
+  const pages = files.outer.subarray(0, len);
+  const render2 = L.renderers && L.renderers["attest.render.v2"];
+  const needs = certificate ? null : !c.original ? "The original document isn't in this file." : !c.entriesComplete ? "A signer's entries are missing from the evidence." : v.variant === "full" && !c.trail ? "The audit trail isn't in the evidence." : null;
+  // A v5 signed copy always carries what re-making its pages needs: without it, the file was changed.
+  if (needs) { add("bad", "The pages you see can't be re-made from this file's evidence", `${needs} A ${v.variant === "pages" ? "signed pages copy" : "signed copy"} always carries it, so this file was changed.`); return; }
+  if (!c.details || !c.state || !c.anchorTx || !render2) {
+    add("warn", "The pages you see couldn't be re-made here", !c.anchorTx ? "The signed state's anchor transaction didn't check out." : "The signed state or the completion details didn't check out.");
+    return;
+  }
+  let made = null;
+  try {
+    made = await render2({
+      original: certificate ? null : c.original,
+      variant: v.variant,
+      appUrl: TRUST.webauthn.origin,
+      agreement: { id: c.id, title: c.title, documentSha256: str(ev.document.sha256), completionHash: c.stateSha, anchorTxHash: c.anchorTx },
+      details: c.details,
+      trail: certificate ? null : c.trail,
+      signers: c.signers.map((s) => ({ commitment: s.commitment, name: str((c.statementOf.get(s) || {}).name), signedAt: str((c.state.signers.find((x) => x.signer === s.commitment) || {}).signedAt) })),
+      entries: certificate ? {} : c.entries,
+    });
+  } catch (e) {
+    add("bad", "The pages you see couldn't be re-made from what was signed", esc(e.message));
+    return;
+  }
+  const same = made.length === pages.length && made.every((b, i) => pages[i] === b);
+  if (!same) {
+    add("bad", "The pages you see aren't what was signed", "Re-made here from the original document, the completion details and every signer's entries, they differ from this file's pages. You can save the pages as they were signed.");
+    downloads.push({ label: "Save the pages as signed (re-made here)", name: `${c.id}-signed-pages.pdf`, type: "application/pdf", bytes: made });
+    return;
+  }
+  if (files.structure && !files.structure.ok) {
+    add("bad", "Something was added to this file after Attest sealed it", `${esc(files.structure.why[0].toUpperCase() + files.structure.why.slice(1))}. A PDF reader shows additions like this on top of the signed pages. The signed pages themselves are intact: you can save them exactly as they were signed.`);
+    downloads.push({ label: "Save the signed pages exactly as signed", name: `${c.id}-signed-pages.pdf`, type: "application/pdf", bytes: pages });
+    return;
+  }
+  if (certificate) {
+    add("ok", "The pages you see are exactly Attest's certificate of this agreement", "Re-made here, byte for byte, from every signer's signed statement, the signed state and Attest's anchored details (renderer attest.render.v2). Nothing follows them but the evidence and this verifier, attached as files.");
+    return;
+  }
+  add("ok", "The pages you see are exactly the document as signed", `Re-made here, byte for byte, from the original document, every signer's entries in the places their statements name, and Attest's anchored details${v.variant === "full" ? " and audit trail, with the certificate pages" : ""} (renderer attest.render.v2). Nothing follows them but the evidence, the original document and this verifier, attached as files.`);
+  // The same pages, anchored when the copy was sealed: a second, independent hold on them.
+  await onChain("The same pages, anchored when the copy was sealed", await sha256hex(`attest.signed_copy.v1|${c.id}|${v.variant}|${await sha256hex(pages)}`), {
+    wallet: c.wallet,
+    missing: "wait",
+    missingDetail: "Attest anchors a signed copy's pages, from the wallet that anchored the agreement, when a party seals it. If the copy was made in the last few minutes, its anchor is on its way: check again shortly.",
+  });
 }
 
 // ============================================================================================== receipts
@@ -1282,8 +1504,11 @@ async function verify(ev, files) {
     add("bad", "This copy of the verifier is incomplete", "Its libraries are missing. Download it again from the releases page.");
     return render(f.kind);
   }
+  if (files && files.verifiers && files.verifiers.length) await checkAttachedVerifiers(files.verifiers);
+  if (files && files.extraPdfs) add("bad", "This file carries more than one PDF", `${files.extraPdfs} PDFs are attached: a signed copy carries one, the document exactly as signed. Don't open the others.`);
+  if (files && files.inPages && files.inPages.length) add("warn", `The signed pages carry ${files.inPages.length === 1 ? "a file" : `${files.inPages.length} files`} of their own`, "They were in the document as it was signed, so a PDF reader lists them next to Attest's attachments. They aren't Attest's: don't open them as its verifier or evidence.");
   try {
-    if (f.kind === "agreement") return await verifyAgreement(f.v === 1 ? fromV1(ev) : ev, files);
+    if (f.kind === "agreement") return f.v >= 5 ? await verifyAgreementV5(ev, files) : await verifyAgreement(f.v === 1 ? fromV1(ev) : ev, files);
     if (f.kind === "receipt") return await verifyReceipt(ev, files);
     if (f.kind === "certificate") return await verifyCertificate(ev, files);
     if (f.kind === "card") return await verifyCard(ev);
@@ -1312,13 +1537,24 @@ async function handle(list) {
       if (j && typeof j.format === "string") { records.push({ ev: j, files: { pdf: null, outer: null } }); continue; }
     }
     const isPdf = latin1.decode(buf.slice(0, 5)) === "%PDF-";
-    const att = isPdf ? await attachmentsOf(buf) : [];
+    let att = isPdf ? await attachmentsOf(buf) : [];
     if (att.noInflate) return refuse("This browser can't open the PDF's attachments. Open this page in a current browser.");
-    const evidence = [], pdfs = [];
+    // Also every file a reader would list (found through file specifications, whatever their streams declare).
+    if (isPdf && L && L.attachedFiles) {
+      let listed = null;
+      try { listed = await L.attachedFiles(buf); } catch { return refuse(`${f.name} can't be read as a PDF.`); }
+      const have = new Set(await Promise.all(att.map((b) => sha256hex(b))));
+      for (const b of listed) if (!have.has(await sha256hex(b))) { att.push(b); have.add(await sha256hex(b)); }
+    }
+    // Every attached file is one of three things: Attest's evidence, a PDF (the signed document), or anything else, which
+    // must be a verifier build Attest published (whatever its first bytes: a reader may open any file).
+    const evidence = [], pdfs = [], other = [];
     for (const b of att) {
-      const head = latin1.decode(b.slice(0, 64));
-      if (head.startsWith("%PDF")) pdfs.push(b);
-      else if (head.trimStart().startsWith("{")) { try { const j = JSON.parse(dec.decode(b)); if (j && typeof j.format === "string") evidence.push(j); } catch {} }
+      if (latin1.decode(b.slice(0, 5)) === "%PDF-") { pdfs.push(b); continue; }
+      let j = null;
+      try { j = JSON.parse(dec.decode(b)); } catch {}
+      if (j && typeof j === "object" && typeof j.format === "string") evidence.push(j);
+      else other.push(b);
     }
     if (!evidence.length) { others.push({ name: f.name, buf, isPdf }); continue; }
     // A signed copy: read it strictly, and use only the attachments of Attest's update after the signed pages (the
@@ -1333,10 +1569,16 @@ async function handle(list) {
     let ev, files;
     if (chosen) {
       try { ev = JSON.parse(dec.decode(chosen.files["attest-evidence.json"])); } catch { return refuse(`${f.name}'s evidence isn't readable.`); }
-      files = { pdf: chosen.files["original-document.pdf"] || null, outer: buf, structure: chosen };
+      // Files the signed pages carry themselves (the document as it was signed may hold attachments): not Attest's.
+      const attest = new Set(await Promise.all(Object.values(chosen.files).map((b) => sha256hex(b))));
+      const inPages = [];
+      for (const b of att) if (!attest.has(await sha256hex(b))) inPages.push(b);
+      files = { pdf: chosen.files["original-document.pdf"] || null, outer: buf, structure: chosen, verifiers: chosen.files["attest-verifier.html"] ? [chosen.files["attest-verifier.html"]] : [], inPages };
     } else if (evidence.length === 1) {
       ev = evidence[0];
-      files = { pdf: pdfs.length === 1 ? pdfs[0] : null, outer: buf, structure: failed ? failed.sealed : null };
+      // Not read strictly (a certificate or a copy from before October 10, 2026): every file other than the evidence
+      // and one PDF is checked as a verifier build, and a second PDF is refused.
+      files = { pdf: pdfs.length === 1 ? pdfs[0] : null, outer: buf, structure: failed ? failed.sealed : null, verifiers: other, extraPdfs: pdfs.length > 1 ? pdfs.length : 0 };
     } else return refuse(`${f.name} carries more than one evidence file, and none is attached the way Attest seals a signed copy: this file was changed.`);
     records.push({ ev, files });
   }
