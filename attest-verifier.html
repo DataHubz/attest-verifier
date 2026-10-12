@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <!-- Only this file's own scripts run (by hash), and nothing in a file being checked can add one. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-RZlBMFVugaA7rzyN/h7osvGBzu60tyYui+H0L1PfnNo=' 'sha256-TOlJKaRoEuuzkCc9ivnKmfhO5a8YWO/dQRbIUJFHvJE='; style-src 'unsafe-inline'; connect-src https: http://localhost:* http://127.0.0.1:*; img-src data:; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-RZlBMFVugaA7rzyN/h7osvGBzu60tyYui+H0L1PfnNo=' 'sha256-g9+qtjUA8rUs7BSDsSaoXpyyiox93inzT1V48Oi2JrQ='; style-src 'unsafe-inline'; connect-src https: http://localhost:* http://127.0.0.1:*; img-src data:; base-uri 'none'; form-action 'none'">
 <title>Attest verifier</title>
 <!--
   Attest standalone verifier. Open source (MIT): github.com/DataHubz/attest-verifier. Built from src/ by build.mjs;
@@ -504,7 +504,7 @@ pako/dist/pako.esm.mjs:
 // This file's version, and the evidence formats it reads. Every release reads every earlier format, so an
 // older record verifies with any newer verifier; a record in a newer format is reported as such.
 const VERIFIER = {
-  version: "1.4.0",
+  version: "1.4.1",
   formats: { agreement: [1, 2, 3, 4], receipt: [1, 2], certificate: [1, 2], card: [1, 2], proof: [1, 2], analytics: [1, 2] },
   repo: "https://github.com/DataHubz/attest-verifier",
   latest: ["https://attest.datahubz.com/attest-verifier/latest.json", "https://raw.githubusercontent.com/DataHubz/attest-verifier/main/latest.json"],
