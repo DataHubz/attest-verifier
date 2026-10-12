@@ -180,7 +180,7 @@ chain                chainId, rpc, contract
 
 1. **Content.** `sha256(canonicalJson(content)) == contentSha256`.
 2. **Signers.** Each `consentJson` names `certificate == id` and `contentSha256`; the passkey assertion over it is valid (as agreement check 4).
-3. **Issuer key.** The issuer key value (see above) is an Attest anchor, from the wallet named in `issuer.keyAnchor.from`: that is the organization's wallet. The DID must be one Attest issues (`did:web:attest.datahubz.com:orgs:<slug>`).
+3. **Issuer key.** The issuer key value (see above) is an Attest anchor, from the wallet named in `issuer.keyAnchor.from`: that is the organization's wallet. The DID must be one Attest issues (`did:web:attest.datahubz.com:orgs:<slug>`), and every verification method in its document must be that one committed key (as a Multikey or as a JWK, with an id under the DID): a signature is checked only against it.
 4. **Issuer signature.** `vcJwt` is a JWS (ES256) by the key `kid` in the DID document; its payload names `issuer.id == did` and `credentialSubject.contentSha256 == contentSha256`.
 5. **PDF.** Optionally, `SHA-256(pdf) == pdfSha256`.
 6. **Anchor.** `sha256("attest.certificate.v1|" + id + "|" + pdfSha256 + "|" + sha256(vcJwt))` is an Attest anchor by the wallet that anchored the issuer key.

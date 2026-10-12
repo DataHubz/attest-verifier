@@ -40,6 +40,7 @@ leaves, `sha256(receiptId + ":" + fingerprint)`. No account can make an Attest w
 | Content added to a signed copy after its evidence (a second PDF update that overlays a page, a script, an annotation) | The verifier reads the file strictly: after the signed pages there must be exactly Attest's update, attaching the evidence, the original and the verifier, with a catalog that is otherwise the pages' own. Anything else fails, and the verifier offers the signed pages exactly as sealed. |
 | The signed pages edited | Their SHA-256 no longer matches the anchored value. |
 | A zero-knowledge proof checked against a key that accepts anything | Proofs are checked only against the pinned verification keys. |
+| A certificate or Proof Card signed by a key the forger adds to the issuer's DID document | The DID document may hold only the key Attest committed on chain from the issuer's wallet; every proof must name it, and no other DID resolves. |
 | A proof's root, or an issuer key, status change or Analytics day, anchored by an outsider | Same as any anchor: it must be from a registered Attest wallet, under its own domain-separated value. |
 | A predictable value anchored first to block Attest | AttestRegistryV3 keeps values per wallet: Attest's anchor still lands. |
 | A file that tries to run a script in the page | The page runs only its own scripts, by hash (Content Security Policy); links go only to the pinned explorer. Served from attest.datahubz.com it is also sandboxed away from the app's cookies and storage. |

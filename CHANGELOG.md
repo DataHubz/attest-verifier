@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.4.2 (2026-10-12)
+
+- Certificates and Proof Cards: an issuer's signature counts only against the key Attest committed on chain. The issuer's DID document in the evidence may carry only that key (as a Multikey and as a JWK, under the issuer's DID), and every proof, on the card and on its status lists, must name it. Found by an independent review: 1.0.0 to 1.4.1 checked a certificate's or card's signature against whichever key its DID document listed, so a fabricated certificate or card whose DID document added a key of the forger's own could verify.
+- A certificate whose evidence lacks the issued PDF's fingerprint or the issuer's credential fails, instead of skipping its anchor.
+- Keys resolve only from the issuer's DID document: no other DID (did:key included) can sign.
+
+Affected versions: 1.0.0 to 1.4.1, for certificates and Proof Cards. Signed agreements, receipts, agreement proofs and Analytics are not affected. Use 1.4.2.
+
 ## 1.4.1 (2026-10-12)
 
 - Proof Cards verify in Firefox: the issuer's key is a compressed P-256 point, which Firefox's WebCrypto refuses to import (raw or in SPKI). The verifier decompresses it, checking the point is on the curve, before importing it. 1.1.0 to 1.4.0 report a genuine card's issuer signature as invalid in Firefox; Chromium and WebKit were not affected.
