@@ -8,6 +8,12 @@ import { checkStatus } from "@digitalbazaar/vc-bitstring-status-list";
 import * as cborg from "cborg";
 import { verifyGroth16 } from "./groth16.mjs";
 import { p256 } from "@noble/curves/p256";
+// Renderer v2 re-makes a v5 signed copy's visible pages; the certificate fonts it embeds travel with it.
+import { renderV2, RENDERER_V2 } from "./renderer/v2.ts";
+import { PDFArray, PDFDict, PDFDocument, PDFName, PDFRawStream, PDFRef, decodePDFRawStream } from "pdf-lib";
+import instrumentSans400 from "./fonts/instrument-sans-400.ttf";
+import instrumentSans600 from "./fonts/instrument-sans-600.ttf";
+import jetbrainsMono400 from "./fonts/jetbrains-mono-400.ttf";
 
 // Issuer keys (Multikey) are compressed P-256 points, which some browsers' WebCrypto won't import, raw or wrapped in
 // SPKI (Firefox). The point is decompressed, and checked to be on the curve, before WebCrypto imports it.
@@ -39,7 +45,38 @@ import agreementWithParty from "./circuits/agreement_with_party_vk.json";
 import securityScanProofV2 from "./circuits/security_scan_proof_v2_vk.json";
 import findingsClosure from "./circuits/findings_closure_vk.json";
 
+/**
+ * Every file a PDF reader would list as attached: the streams named by any file specification's /EF, anywhere in the
+ * document (the attachments name tree, a file attachment annotation, media), decoded. A stream that can't be decoded
+ * is returned as stored, so it can't pass for anything Attest published.
+ */
+async function attachedFiles(bytes) {
+  const pdf = await PDFDocument.load(bytes, { ignoreEncryption: true, updateMetadata: false, throwOnInvalidObject: false });
+  const ctx = pdf.context;
+  const look = (v) => (v instanceof PDFRef ? ctx.lookup(v) : v);
+  const out = [], seen = new Set();
+  const take = (v) => {
+    const st = look(v);
+    if (!(st instanceof PDFRawStream) || seen.has(st)) return;
+    seen.add(st);
+    try { out.push(decodePDFRawStream(st).decode()); } catch { out.push(st.contents); }
+  };
+  const walk = (v, depth) => {
+    if (depth > 32) return;
+    const d = v instanceof PDFDict ? v : v && v.dict instanceof PDFDict ? v.dict : null;
+    if (d) {
+      const ef = look(d.get(PDFName.of("EF")));
+      if (ef instanceof PDFDict) for (const [, f] of ef.entries()) take(f);
+      if (v instanceof PDFRawStream && d.get(PDFName.of("Type")) === PDFName.of("EmbeddedFile")) take(v);
+      for (const [, x] of d.entries()) if (!(x instanceof PDFRef)) walk(x, depth + 1);
+    } else if (v instanceof PDFArray) for (const x of v.asArray()) if (!(x instanceof PDFRef)) walk(x, depth + 1);
+  };
+  for (const [, obj] of ctx.enumerateIndirectObjects()) walk(obj, 0);
+  return out;
+}
+
 window.AttestLibs = {
+  attachedFiles,
   vc,
   DataIntegrityProof,
   createVerifyCryptosuite,
@@ -48,6 +85,9 @@ window.AttestLibs = {
   checkStatus,
   cborg,
   verifyGroth16,
+  renderers: {
+    [RENDERER_V2]: (input) => renderV2({ ...input, fonts: { sans: instrumentSans400, bold: instrumentSans600, mono: jetbrainsMono400 } }),
+  },
   circuits: {
     agreement_membership: agreementMembership,
     agreement_with_party: agreementWithParty,

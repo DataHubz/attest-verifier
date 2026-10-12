@@ -1,13 +1,13 @@
 {
   "name": "attest-verifier",
-  "version": "1.4.2",
+  "version": "1.5.0",
   "private": true,
   "description": "Standalone verifier for Attest evidence: signed agreements, receipts, certificates, Proof Cards and zero-knowledge proofs.",
   "license": "MIT",
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
-    "test": "node groth16-check.mjs test/vectors/*.json && node test/structure.mjs"
+    "test": "node groth16-check.mjs test/vectors/*.json && node test/structure.mjs && node test/renderer.mjs"
   },
   "devDependencies": {
     "@digitalbazaar/data-integrity": "2.5.0",
@@ -18,9 +18,12 @@
     "@digitalbazaar/vc": "7.3.0",
     "@digitalbazaar/vc-bitstring-status-list": "2.0.1",
     "@noble/curves": "1.9.7",
+    "@pdf-lib/fontkit": "1.1.1",
     "cborg": "4.5.8",
     "esbuild": "0.25.10",
     "jsonld-signatures": "11.5.0",
+    "pdf-lib": "1.17.1",
+    "qrcode": "1.5.4",
     "snarkjs": "0.7.6"
   }
 }

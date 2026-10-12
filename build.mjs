@@ -49,6 +49,8 @@ const libs = await build({
   legalComments: "eof",
   // Single-file page: modules that resolve paths from their own URL resolve them from the page.
   define: { "process.env.NODE_ENV": '"production"', "import.meta.url": "document.baseURI" },
+  // The certificate fonts renderer v2 embeds, as bytes.
+  loader: { ".ttf": "binary" },
   write: false,
   metafile: true,
   logLevel: "error",
@@ -73,7 +75,9 @@ function notices(metafile) {
   }
   return out.join("\n\n");
 }
-const thirdParty = notices(libs.metafile).replace(/--/g, "- -");
+// The fonts the renderer embeds (SIL Open Font License 1.1, whose text must travel with them).
+const fonts = ["instrument-sans", "jetbrains-mono"].map((f) => readFileSync(`src/fonts/OFL-${f}.txt`, "utf8").trim()).join("\n\n");
+const thirdParty = `${notices(libs.metafile)}\n\nInstrument Sans 400 and 600, JetBrains Mono 400 (OFL-1.1)\n\n${fonts}`.replace(/--/g, "- -");
 const safe = (js) => js.replace(/<\/script/gi, "<\\/script");
 let page = readFileSync("src/page.html", "utf8")
   .replace("/*LIBS*/", () => safe(libs.outputFiles[0].text))
