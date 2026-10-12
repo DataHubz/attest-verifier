@@ -2,7 +2,7 @@
 // This file's version, and the evidence formats it reads. Every release reads every earlier format, so an
 // older record verifies with any newer verifier; a record in a newer format is reported as such.
 const VERIFIER = {
-  version: "1.4.1",
+  version: "1.4.2",
   formats: { agreement: [1, 2, 3, 4], receipt: [1, 2], certificate: [1, 2], card: [1, 2], proof: [1, 2], analytics: [1, 2] },
   repo: "https://github.com/DataHubz/attest-verifier",
   latest: ["https://attest.datahubz.com/attest-verifier/latest.json", "https://raw.githubusercontent.com/DataHubz/attest-verifier/main/latest.json"],
@@ -647,10 +647,19 @@ async function checkIssuerKey(issuer, issuedAt) {
   const doc = (issuer && issuer.didDocument) || {};
   if (!issuer || typeof issuer.did !== "string" || doc.id !== issuer.did) { add("bad", "The issuer's DID document is for a different issuer", ""); return null; }
   if (!/^did:web:attest\.datahubz\.com:orgs:[a-z0-9-]+$/.test(issuer.did)) { add("bad", "The issuer isn't an Attest organization", `${mono(issuer.did)} isn't a DID Attest issues.`); return null; }
-  const vms = doc.verificationMethod || [];
-  const multi = vms.find((m) => m.publicKeyMultibase), jwkVm = vms.find((m) => m.publicKeyJwk);
+  const vms = Array.isArray(doc.verificationMethod) ? doc.verificationMethod : [];
+  const multi = vms.find((m) => m && m.publicKeyMultibase), jwkVm = vms.find((m) => m && m.publicKeyJwk);
   if (!multi || !jwkVm) { add("bad", "The issuer's DID document has no signing key", ""); return null; }
   const value = await sha256hex(`attest.issuer_key.v1|${issuer.did}|${multi.publicKeyMultibase}|${canonicalJson(jwkVm.publicKeyJwk)}`);
+  // The anchor commits to one key (as a Multikey and as a JWK). Every verification method in the document must be that
+  // key, under this DID, so a signature can only ever be checked against the key Attest committed.
+  const committedJwk = canonicalJson(jwkVm.publicKeyJwk);
+  for (const m of vms) {
+    const fields = m && typeof m === "object" ? Object.keys(m).filter((k) => !["id", "type", "controller"].includes(k)) : [];
+    const sameKey = fields.length === 1 && ((fields[0] === "publicKeyMultibase" && m.publicKeyMultibase === multi.publicKeyMultibase) || (fields[0] === "publicKeyJwk" && canonicalJson(m.publicKeyJwk) === committedJwk));
+    const ours = Boolean(m) && typeof m.id === "string" && m.id.startsWith(`${issuer.did}#`) && (m.controller === undefined || m.controller === issuer.did);
+    if (!sameKey || !ours) { add("bad", "The issuer's DID document carries a key Attest didn't commit", `${mono(str(m && m.id))} isn't the key committed on chain for ${mono(issuer.did)}.`); return null; }
+  }
   const k = issuer.keyAnchor || {};
   const r = await onChain(`The issuer's key, ${issuer.did}`, value, { wallet: k.from, missing: "bad", missingDetail: "Attest commits every issuer's key on chain from the organization's own wallet before its first use. This key isn't committed, so nothing ties it to the issuer." });
   if (!r) return null;
@@ -967,10 +976,12 @@ async function verifyCertificate(ev, files) {
     add(h === c.pdfSha256 ? "ok" : "bad", h === c.pdfSha256 ? "The PDF is exactly the issued certificate" : "The PDF is not the issued certificate", `SHA-256 ${mono(h)}`);
   } else add("info", "Drop the certificate PDF too, to check it is the issued one", `Its fingerprint is ${mono(str(c.pdfSha256))}.`);
   // Issuance, from the issuer's own wallet
-  if (isHex64(c.pdfSha256) && typeof c.vcJwt === "string" && ev.anchor && key) {
+  if (!ev.anchor) add("wait", "The certificate isn't anchored yet", "");
+  else if (!isHex64(c.pdfSha256) || typeof c.vcJwt !== "string") add("bad", "The certificate's anchor can't be checked", "Its evidence lacks the issued PDF's fingerprint or the issuer's credential, which the anchor commits to.");
+  else if (key) {
     const value = await sha256hex(`attest.certificate.v1|${c.id}|${c.pdfSha256}|${await sha256hex(c.vcJwt)}`);
     if (onAttestChain("The issued certificate", ev.anchor)) await onChain("The issued certificate", value, { txHash: ev.anchor.txHash, wallet: key.wallet });
-  } else if (!ev.anchor) add("wait", "The certificate isn't anchored yet", "");
+  }
   // Current status, read from the chain: a revocation anchored by the issuer's wallet.
   if (key) {
     try {
@@ -1014,6 +1025,8 @@ function loaderFor(ev) {
       return doc(url, vm.publicKeyMultibase ? { "@context": "https://w3id.org/security/multikey/v1", ...vm } : { "@context": "https://w3id.org/security/suites/jws-2020/v1", ...vm });
     }
     if (lists[url]) return doc(url, lists[url]);
+    // Keys come only from the issuer's DID document above: no other DID (did:key included) can sign.
+    if (/^did:/i.test(url)) throw new Error(`Unknown key: ${url}`);
     return base(url);
   };
 }
@@ -1056,6 +1069,10 @@ async function verifyCard(ev) {
     const anchor = (ev.contextAnchors && ev.contextAnchors[u]) || {};
     await onChain(`The card's vocabulary (${u})`, await sha256hex(`attest.context.v1|${u}|${canonicalJson(L.contexts[u])}`), { wallet: anchor.from, missing: "warn", missingDetail: "This verifier carries its own copy, so a file can't redefine what the fields mean; its commitment on chain couldn't be found." });
   }
+  // Every proof, on the card and on its status lists, names the issuer's committed key.
+  const proofsOf = (c) => (c && c.proof ? (Array.isArray(c.proof) ? c.proof : [c.proof]) : []);
+  const foreign = [cred, ...(ev.statusLists || []).map((l) => l && l.credential)].flatMap(proofsOf).find((p) => !p || typeof p.verificationMethod !== "string" || !p.verificationMethod.startsWith(`${ev.issuer.did}#`));
+  if (foreign) add("bad", "A signature names a key outside the issuer's DID document", mono(str(foreign && foreign.verificationMethod)));
   const loader = loaderFor(ev);
   const suite = [new L.DataIntegrityProof({ cryptosuite: L.createVerifyCryptosuite() }), new L.DataIntegrityProof({ cryptosuite: L.ecdsaRdfc2019 })];
   const validUntil = cred.validUntil ? new Date(cred.validUntil) : null;
@@ -1063,7 +1080,7 @@ async function verifyCard(ev) {
   let sigOk = false;
   try {
     const r = await L.vc.verifyCredential({ credential: cred, suite, documentLoader: loader, checkStatus: L.checkStatus, now: at });
-    sigOk = Boolean(key && r.results && r.results.some((x) => x.verified));
+    sigOk = Boolean(key && !foreign && r.results && r.results.some((x) => x.verified));
     const why = sigOk ? "" : (() => { const e = (r.results || []).map((x) => x.error).find(Boolean) || r.error; const m = e && [e.message || (e.errors && e.errors[0] && e.errors[0].message), e.cause && e.cause.message].filter(Boolean).join(": "); return m ? ` (${esc(m)})` : ""; })();
     add(sigOk ? "ok" : "bad", "Signed by the issuer", `W3C Verifiable Credential with selective disclosure (ecdsa-sd-2023): only the fields shown were revealed, and each is covered by the issuer's signature.${why}`);
     const sts = (r.statusResult && r.statusResult.results) || [];
