@@ -15,7 +15,7 @@ import { noticesFor, type Notice } from "@/lib/unlock/notices";
 
 declare const self: ServiceWorkerGlobalScope;
 
-export const UNLOCK_WORKER_VERSION = "1.1.0";
+export const UNLOCK_WORKER_VERSION = "1.2.0";
 const RUN_MS = 15_000;
 
 self.addEventListener("install", () => {

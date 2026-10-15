@@ -8,6 +8,7 @@ import { runUnlock, type Outcome, type PendingResponse, type RecentUnlock, type 
 import { signDeviceRequest } from "@/lib/unlock/signed-request";
 import { signText } from "@/lib/signing-key";
 import { nextKeyStatement } from "@/lib/unlock/device-list";
+import { contextQueue } from "@/lib/unlock/browser-lock";
 
 /**
  * This device as one that unlocks documents for its owner's new signers (design 3.2). DOM-free: the service worker and
@@ -42,6 +43,8 @@ export interface DeviceState {
   /** Lock-screen notifications leave the document's title out (D4). */
   hideTitles: boolean;
   enrolledAt: number;
+  /** A key the device list named for this device that it doesn't hold, already reported and registered for again. */
+  unheldKey?: string;
 }
 
 const STATE = "device:self";
@@ -52,8 +55,9 @@ export async function deviceState(): Promise<DeviceState | null> {
 export async function saveDeviceState(s: DeviceState) {
   await trustStore().set(STATE, s);
 }
-export async function updateDeviceState(fn: (s: DeviceState) => DeviceState | undefined) {
-  await trustStore().update<DeviceState>(STATE, (cur) => (cur ? fn(cur) : cur));
+/** Change this device's state in one transaction of the trust store; the state as stored after it (none: no device). */
+export async function updateDeviceState(fn: (s: DeviceState) => DeviceState | undefined): Promise<DeviceState | undefined> {
+  return trustStore().update<DeviceState>(STATE, (cur) => (cur ? fn(cur) : cur));
 }
 /**
  * Forget this device: its keys are deleted, so nothing wrapped to them opens here again. `off`: Attest turned it off (from
@@ -144,21 +148,65 @@ export async function checkOwnList(s: DeviceState, signed: SignedDeviceList | nu
   const credentialFp = await sha256Hex(s.credentialSpki);
   const mine = liveEntries(list).find((d) => d.id === s.id && d.credential === credentialFp);
   if (!mine) throw new DeviceOffError("not listed");
-  // A renewal listed the next key: switch to it, and keep the old one while copies may still be wrapped to it.
+  // A renewal listed the next key: switch to it, and keep the old one while copies may still be wrapped to it. Decided
+  // on the state as stored, so the switch happens once even when another run (without Web Locks) made it meanwhile.
   if (s.next && mine.key === s.next.fp && s.keyFp !== s.next.fp) {
-    const next = s.next;
-    await updateDeviceState((cur) => ({ ...cur, keys: { ...cur.keys, [next.fp]: next.key }, keyFp: next.fp, deviceKeySpki: next.spki, next: null, retired: { ...cur.retired, [cur.keyFp]: Date.now() } }));
+    await updateDeviceState((cur) => {
+      const next = cur.next;
+      if (!next || next.fp !== mine.key || cur.keyFp === next.fp) return cur;
+      return { ...cur, keys: { ...cur.keys, [next.fp]: next.key }, keyFp: next.fp, deviceKeySpki: next.spki, next: null, retired: { ...cur.retired, [cur.keyFp]: Date.now() } };
+    });
+  }
+  // The key the list names for this device must be one it holds: copies are wrapped to it.
+  const now = (await deviceState()) ?? s;
+  if (!now.keys[mine.key]) await keyNotHeld(now, mine.key);
+  else if (now.unheldKey) {
+    await updateDeviceState((cur) => {
+      const { unheldKey: _, ...rest } = cur;
+      return rest;
+    });
   }
   return list;
 }
 
-/** Make and register the next device key (rotated in at the next renewal), when there is none yet. */
+/**
+ * The device list names a key for this device that it doesn't hold, so copies wrapped to it can't be opened here. Its
+ * registration of a next key was lost (two runs side by side in an older worker), its state lost the key, or another
+ * copy of this browser profile, holding the same credential, registered a key of its own: the device can't tell which.
+ * So it does both safe things, once per listed key. It registers a key it holds again (its next key, or a new one),
+ * which the next renewal at a passkey prompt lists, after which Attest serves it and the renewing browser wraps copies to
+ * it: re-registering grants nothing, as only this device's credential signs a next key and only the account's signing
+ * key lists it. And it raises its alarm and tells DataHubz, so a copied profile, or a fault, is seen rather than healed
+ * in silence. Nothing is opened with a key it doesn't hold, so nothing is shared meanwhile.
+ */
+async function keyNotHeld(s: DeviceState, listed: string): Promise<void> {
+  let first = false;
+  const marked = await updateDeviceState((cur) => {
+    if (cur.unheldKey === listed) return cur;
+    first = true;
+    return { ...cur, unheldKey: listed, next: cur.next ? { ...cur.next, registered: false } : null };
+  });
+  if (!first || !marked) return;
+  const detail = `device key: this device doesn't hold the key the device list names for it (${listed.slice(0, 16)}), so documents wrapped to that key can't be unlocked here. It registered a key it holds again, which the next passkey prompt on any of your devices lists. If this browser's profile was copied to another computer, turn this device off on your Security page.`;
+  await raiseUnlockAlarm(detail).catch(() => {});
+  await deviceFetch(s, "POST", "/api/unlock/alarm", { reason: "unlock", detail }).catch(() => null);
+  await prepareNextKey(marked).catch(() => {});
+}
+
+/**
+ * Make and register the next device key (rotated in at the next renewal), when there is none registered yet. A key made
+ * here is stored only if none is stored meanwhile, and the stored one is what's registered: two runs side by side (a tab's
+ * and the worker's, in a browser without Web Locks) register the same key, the one this device holds, whatever order
+ * Attest takes them in. It counts as registered only if it is still the stored next key once Attest took it.
+ */
 export async function prepareNextKey(s: DeviceState): Promise<void> {
   if (s.next?.registered) return;
-  const next = s.next ?? { ...(await newDeviceKey()), registered: false };
-  if (!s.next) await updateDeviceState((cur) => ({ ...cur, next }));
-  const res = await deviceFetch(s, "PATCH", "/api/unlock/device", { nextKey: next.spki, nextKeySig: await signText(s.credential, nextKeyStatement(s.id, next.fp)) });
-  if (res.ok) await updateDeviceState((cur) => (cur.next ? { ...cur, next: { ...cur.next, registered: true } } : cur));
+  const made = s.next ? null : { ...(await newDeviceKey()), registered: false };
+  const cur = made ? await updateDeviceState((c) => (c.next ? c : { ...c, next: made })) : await deviceState();
+  const next = cur?.next;
+  if (!cur || !next || next.registered) return;
+  const res = await deviceFetch(cur, "PATCH", "/api/unlock/device", { nextKey: next.spki, nextKeySig: await signText(cur.credential, nextKeyStatement(cur.id, next.fp)) });
+  if (res.ok) await updateDeviceState((c) => (c.next?.fp === next.fp ? { ...c, next: { ...c.next, registered: true } } : c));
 }
 
 /** Delete keys a rotation replaced once no device copy refers to them (or after 60 days). */
@@ -184,12 +232,27 @@ export type DeviceRunResult =
   | { status: "none" }
   | { status: "error"; message: string };
 
+/** Without Web Locks, or where this context can't take them: one run at a time in this tab or worker. */
+const runsHere = contextQueue();
+
 async function withLock<T>(fn: () => Promise<T>, wait: boolean): Promise<T | null> {
-  const locks = (globalThis as { navigator?: { locks?: LockManager } }).navigator?.locks;
-  if (!locks) return fn();
   // Two tabs and the service worker never run at once on one device. A page's periodic check skips while another run
-  // holds it; a push waits for it (and then sees what that run did).
-  return (await locks.request("attest-unlock", wait ? {} : { ifAvailable: true }, async (lock) => (lock ? fn() : null))) as T | null;
+  // holds it; a push waits for it (and then sees what that run did). Without Web Locks the same holds within a tab or the
+  // worker (two contexts may then run side by side: prepareNextKey and checkOwnList decide on the state as stored).
+  const locks = (globalThis as { navigator?: { locks?: LockManager } }).navigator?.locks;
+  if (locks && typeof locks.request === "function") {
+    let started = false;
+    try {
+      return (await locks.request("attest-unlock", wait ? {} : { ifAvailable: true }, async (lock) => {
+        started = true;
+        return lock ? fn() : null;
+      })) as T | null;
+    } catch (e) {
+      if (started) throw e;
+    }
+  }
+  if (!wait && runsHere.busy()) return null;
+  return runsHere.run(fn);
 }
 
 /**
@@ -197,9 +260,13 @@ async function withLock<T>(fn: () => Promise<T>, wait: boolean): Promise<T | nul
  * still on the account's signed list, then unlock what passes every check. At most until `deadline`.
  */
 export async function runDeviceUnlock(opts: { deadline: number; wait?: boolean }): Promise<DeviceRunResult> {
-  const s = await deviceState();
-  if (!s) return { status: "none" };
+  const first = await deviceState();
+  if (!first) return { status: "none" };
   const r = await withLock(async (): Promise<DeviceRunResult> => {
+    // Read again with the lock held: a run that held it meanwhile may have switched to the next key, recorded a newer
+    // list version, or found this device off.
+    const s = await deviceState();
+    if (!s) return { status: "none" };
     let pending: PendingResponse & { list: (SignedDeviceList & { version: number }) | null; copyKeys?: string[] };
     try {
       pending = await json(await deviceFetch(s, "GET", "/api/unlock/pending"));
@@ -250,5 +317,5 @@ export async function runDeviceUnlock(opts: { deadline: number; wait?: boolean }
     if (Date.now() < opts.deadline - 3000) await prepareNextKey((await deviceState()) ?? now).catch(() => {});
     return { status: "done", outcomes, recent: pending.recent, label: now.label, hideTitles: now.hideTitles };
   }, opts.wait === true);
-  return r ?? { status: "done", outcomes: [], recent: [], label: s.label, hideTitles: s.hideTitles };
+  return r ?? { status: "done", outcomes: [], recent: [], label: first.label, hideTitles: first.hideTitles };
 }

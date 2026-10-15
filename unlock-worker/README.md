@@ -1,4 +1,4 @@
-# Attest unlock worker 1.1.0
+# Attest unlock worker 1.2.0
 
 The service worker Attest serves at `https://attest.datahubz.com/sw.js`. On a device its owner turned on, it unlocks a
 document for a new signer automatically: it opens the sealed signer list and the device's copy of the document key, checks
@@ -14,9 +14,9 @@ node build.mjs sw.js
 
 It prints the version, the SHA-256 of the build and the value anchored on Horizen:
 
-- version: `1.1.0`
-- SHA-256 of the build Attest serves: `a8449e6466470ef99abd14e213d1b5aef2a3c1d03d3b64dfb8d65c6d47765b2c`
-- anchored value: `sha256("attest.unlock-worker.v1|1.1.0|a8449e6466470ef99abd14e213d1b5aef2a3c1d03d3b64dfb8d65c6d47765b2c")`
+- version: `1.2.0`
+- SHA-256 of the build Attest serves: `3e5f6d0608dae4fd0914bc9f9ebdec794ec2dc2743b0e3c728a94d7b1839b722`
+- anchored value: `sha256("attest.unlock-worker.v1|1.2.0|3e5f6d0608dae4fd0914bc9f9ebdec794ec2dc2743b0e3c728a94d7b1839b722")`
 
 ## Check it against Horizen
 
@@ -27,8 +27,8 @@ Attest serves a build only once its platform organization has anchored it on Att
 `sw-monitor.mjs` does the whole check against what Attest serves now, with plain Node 18 or later and no dependencies:
 
 ```
-node sw-monitor.mjs --expect a8449e6466470ef99abd14e213d1b5aef2a3c1d03d3b64dfb8d65c6d47765b2c
-node sw-monitor.mjs --expect a8449e6466470ef99abd14e213d1b5aef2a3c1d03d3b64dfb8d65c6d47765b2c --every 15
+node sw-monitor.mjs --expect 3e5f6d0608dae4fd0914bc9f9ebdec794ec2dc2743b0e3c728a94d7b1839b722
+node sw-monitor.mjs --expect 3e5f6d0608dae4fd0914bc9f9ebdec794ec2dc2743b0e3c728a94d7b1839b722 --every 15
 ```
 
 With `--expect` it also requires this exact build; without it, any build the platform wallet ever anchored passes. Run it

@@ -10,6 +10,9 @@
  * The path to a key follows its bits, most significant first (0 = left).
  * A proof lists the non-empty siblings from the root down, with a bitmap of
  * which depths have one.
+ *
+ * The server builds and proves the same tree with synchronous hashing (src/lib/smt-server.ts), from the definition
+ * exported here (DEPTH, LEAF, NODE, bit); this file's WebCrypto code is what browsers and the unlock worker run.
  */
 
 export type Hex = string;
@@ -22,7 +25,7 @@ export interface SmtProof {
   siblings: Hex[]; // non-empty siblings, from depth 0 down
 }
 
-const DEPTH = 256;
+export const DEPTH = 256;
 
 const toBytes = (hex: Hex) => {
   if (!/^[0-9a-f]{64}$/.test(hex)) throw new Error("expected 32 bytes of hex");
@@ -31,7 +34,7 @@ const toBytes = (hex: Hex) => {
   return out;
 };
 const toHex = (b: Uint8Array) => Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
-const bit = (key: Uint8Array, d: number) => (key[d >> 3] >> (7 - (d & 7))) & 1;
+export const bit = (key: Uint8Array, d: number) => (key[d >> 3] >> (7 - (d & 7))) & 1;
 
 async function sha256(...parts: Uint8Array[]): Promise<Uint8Array> {
   const len = parts.reduce((n, p) => n + p.length, 0);
@@ -44,8 +47,8 @@ async function sha256(...parts: Uint8Array[]): Promise<Uint8Array> {
   return new Uint8Array(await crypto.subtle.digest("SHA-256", buf as unknown as BufferSource));
 }
 
-const LEAF = new Uint8Array([0]);
-const NODE = new Uint8Array([1]);
+export const LEAF = new Uint8Array([0]);
+export const NODE = new Uint8Array([1]);
 
 let emptyCache: Uint8Array[] | null = null;
 /** E[h]: the hash of an empty subtree of height h. */
