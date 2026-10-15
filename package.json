@@ -1,6 +1,6 @@
 {
   "name": "attest-verifier",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "private": true,
   "description": "Standalone verifier for Attest evidence: signed agreements, receipts, certificates, Proof Cards and zero-knowledge proofs.",
   "license": "MIT",

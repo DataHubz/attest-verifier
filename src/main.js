@@ -2,7 +2,7 @@
 // This file's version, and the evidence formats it reads. Every release reads every earlier format, so an
 // older record verifies with any newer verifier; a record in a newer format is reported as such.
 const VERIFIER = {
-  version: "1.5.0",
+  version: "1.6.0",
   formats: { agreement: [1, 2, 3, 4, 5, 6], receipt: [1, 2], certificate: [1, 2], card: [1, 2], proof: [1, 2], analytics: [1, 2] },
   repo: "https://github.com/DataHubz/attest-verifier",
   latest: ["https://attest.datahubz.com/attest-verifier/latest.json", "https://raw.githubusercontent.com/DataHubz/attest-verifier/main/latest.json"],

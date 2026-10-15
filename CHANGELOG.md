@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.6.0 (unreleased)
+
+Signed copies whose stamps stay inside their fields: renderer v3, and evidence v6 for the copies it makes.
+
+- Renderer v3 (`attest.render.v3`, `src/renderer/v3.ts`, byte for byte the one Attest's app seals with): everything drawn for an entry stays inside the field the sender placed. A signature's stamp no longer grows past a small field (renderer v2 grew it to 120 by 30 points about the field's center, over the document around it); its bracket, signature, label, code and day sit in a band along the bottom of the field, clear of its edges, where the document's own lines and the labels above a field often are, with the QR code at the right; small fields shrink the stamp's text and then leave out the label, the day and the code. Signature images are fitted by their ink. Text entries wrap or shrink to fit their field. Everything else is drawn as by renderer v2.
+- Evidence v6: the evidence of copies and certificates whose pages renderer v3 made, the same as v5 with renderer v3 named in the completion details and the visible copy. The verifier re-makes their pages with renderer v3 and compares them byte for byte. A v5 record must name renderer v2, a v6 record renderer v3: Attest's agreement anchor binds the details, so pages can't be moved to another renderer. An agreement keeps the renderer it was completed with, so copies of agreements completed with renderer v2 stay v5 and verify as before.
+- Earlier releases report a v6 record as a newer format and point to this release, as they do for any format they don't read; they never report it as failed.
+- `npm test` also renders renderer v3's fixtures (`test/renderer/v3/`) to the exact bytes Attest's app makes: renderer v2's cases, a tester's agreement whose fields reach into the labels above them and sit on their lines, and a field of every size Attest's composer makes, and smaller. The same cases render to the same bytes in Chromium, WebKit and Firefox. Renderer v2's fixtures are unchanged.
+
 ## 1.5.0 (2026-10-12)
 
 Signed copies from protocol v5: the verifier re-makes the pages you see from what was signed, and the record names people only by name.
