@@ -2,12 +2,14 @@
 // (DataHubz/attest-verifier, src/renderer/v3.ts): a verifier re-makes a signed copy's visible pages from what was
 // signed and compares them with the copy. Frozen: a change to what it draws is a new renderer version.
 //
-// v3 is v2 with one change, in how entries are drawn: everything Attest draws for an entry stays inside the field the
-// sender placed. A signature's stamp is laid out within its field (v2 grew a smaller one to 120 by 30 points about its
-// center, over the document around it, and set its label and code along the field's top and bottom edges, where the
-// document's own lines and labels often are); its parts keep clear of the edges, sit along the bottom of the field as
-// a signature sits on its line, and shrink or leave out the stamp's own text in a small field. A text entry wraps or
-// shrinks until it fits. Agreements whose completion details name v2 keep v2, unchanged.
+// v3 is v2 with two changes. First, everything Attest draws for an entry stays inside the field the sender placed. A
+// signature's stamp is laid out within its field (v2 grew a smaller one to 120 by 30 points about its center, over the
+// document around it, and set its label and code along the field's top and bottom edges, where the document's own lines
+// and labels often are); its parts keep clear of the edges, sit along the bottom of the field as a signature sits on
+// its line, and shrink or leave out the stamp's own text in a small field. A text entry wraps or shrinks until it fits.
+// Second, the certificate pages say what a Share proof shows, the date the agreement was completed (v2 said "and
+// when"), and that a PDF reader's attachments panel lists the attached files (v2 said any reader lists them).
+// Agreements whose completion details name v2 keep v2, unchanged.
 //
 // Deterministic in every JavaScript engine: pdf-lib's resource names come from a counter instead of Math.sin, the
 // seal and the guilloche use their own sine (basic arithmetic only), dates are formatted here, QR codes are drawn as
@@ -383,7 +385,9 @@ function drawMark(page: PDFPage, mark: Mark, area: Box, bounds: Box, center: boo
 }
 
 /** The stamp's own text: at most this size, and at least this, or the line is left out (every page's foot carries the code). */
-const STAMP_TEXT = { max: 5, min: 3.4, leading: 1.22 };
+const STAMP_TEXT = { max: 5, min: 4, leading: 1.22 };
+/** The QR code: at most this tall, and this share of the field's width; under the minimum, too fine to scan, it's left out. */
+const STAMP_QR = { max: 24, share: 0.22, min: 12 };
 
 /** Where a stamp's parts go: its text (its lines, their size, left edge and middle), the signature's area, and the QR code. */
 interface StampPlan { lines: string[]; fs: number; tx: number; mid: number; area: Box; center: boolean; qr: Box | null }
@@ -394,17 +398,17 @@ interface StampPlan { lines: string[]; fs: number; tx: number; mid: number; area
  * get an "Attest" stamp with the code, and no day or QR code.
  *
  * Everything keeps clear of the field's edges: a tenth of its height (at most 3 points) above and below, and 3% of its
- * width (at most 3 points) at the sides. The bracket, the signature and the text share a band along the bottom of what
- * is left, as a signature sits on its line, which leaves free the top 28% (at most 9 points), where a label above the
- * field often reaches into it. Only the QR code may rise above the band: it is as tall as the field allows within its
- * edges (at most 30 points, and a quarter of its width), centered on the band when it fits in it; one under 12 points,
- * too fine for a phone's camera, is left out.
+ * width (at most 3 points) at the sides. Everything sits in a band along the bottom of what is left, as a signature
+ * sits on its line, which leaves free the top 28% (at most 9 points), where a label above the field often reaches into
+ * it. The QR code is centered on the band, at most 24 points and 22% of the field's width, so it never dominates the
+ * field; one under 12 points, too fine for a phone's camera, is left out.
  *
  * Side by side, the signature comes first, then the text, then the QR code. In a field too tall for that, the text and
  * the QR code go above the signature, when that keeps more of the text with the signature at least 80% as large, or the
- * same text with the signature a quarter larger. The text is as large as fits, at most 5 points and within 36% of the
- * room beside the QR code (initials: 58% of the field); a field too small for it at 3.4 points leaves out the label,
- * then the day, then the code, which the foot of every page carries with the link to verify.
+ * same text with the signature a quarter larger. The text is as large as fits, at most 5 points and within 40% of the
+ * room beside the QR code (initials: 60% of the field); a field too small for it at 4 points leaves out the label, then
+ * the day, then the code, so no line is ever smaller, and the foot of every page carries the code with the link to
+ * verify.
  */
 function drawStamp(page: PDFPage, box: Box, mark: Mark, o: { initials: boolean; code: string | null; signedAt: string | null; qrUrl: string | null; font: PDFFont; bold: PDFFont }) {
   if (!(box.w > 0 && box.h > 0)) return;
@@ -416,7 +420,7 @@ function drawStamp(page: PDFPage, box: Box, mark: Mark, o: { initials: boolean; 
   const thick = clampTo(box.h * 0.025, 0.4, 0.75);
   const tick = clampTo(band.h * 0.15, 1.2, 3.5);
   const inset = tick + Math.max(1, thick * 2);
-  // The text: the label, the code and the day, leaving out lines until it fits at 3.4 points or more.
+  // The text: the label, the code and the day, leaving out lines until it fits at 4 points or more.
   const label = sign ? "Signed with Attest" : "Attest";
   const code = o.code ? fmtCode(o.code) : null;
   const day = sign && o.signedAt ? `${fmtDay(o.signedAt)} UTC` : null;
@@ -432,28 +436,29 @@ function drawStamp(page: PDFPage, box: Box, mark: Mark, o: { initials: boolean; 
     return { lines: [] as string[], fs: 0 };
   };
   const qrGap = (q: number) => (q ? q + Math.max(2, q * 0.1) : 0);
-  // A QR code under 12 points has modules too fine for a phone's camera: the field's room goes to the signature.
-  const scannable = (q: number) => (q >= 12 ? q : 0);
-  // Side by side: the signature, the text, and the QR code as tall as the field allows.
+  // The QR code fits in the given height, never dominates the field, and is left out when too fine for a phone's camera.
+  const qrIn = (h: number) => {
+    const q = sign && o.qrUrl ? Math.min(h, r.w * STAMP_QR.share, STAMP_QR.max) : 0;
+    return q >= STAMP_QR.min ? q : 0;
+  };
+  // Side by side: the signature, the text, and the QR code, all in the band.
   const side = (): StampPlan => {
-    const q = sign && o.qrUrl ? scannable(Math.min(r.h, r.w * 0.25, 30)) : 0;
+    const q = qrIn(band.h);
     const left = r.w - qrGap(q);
-    let t = text(band.h, left * (sign ? 0.36 : 0.58));
+    let t = text(band.h, left * (sign ? 0.4 : 0.6));
     // The signature always keeps room: in a field too narrow for both, the text is left out.
     if (left - widest(t.lines, t.fs) - Math.max(2, t.fs) - inset < Math.max(left * 0.2, 4)) t = { lines: [], fs: 0 };
     const tw = widest(t.lines, t.fs);
     const gap = t.lines.length ? Math.max(2, t.fs) : 0;
     const area = { x: r.x + inset, y: band.y + thick, w: left - tw - gap - inset, h: band.h - 2 * thick };
-    // The QR code centered on the band when it fits in it, or rising from the band's bottom.
-    const qy = q <= band.h ? band.y + (band.h - q) / 2 : r.y;
-    return { ...t, tx: r.x + left - tw, mid: band.y + band.h / 2, area, center: !sign, qr: q ? { x: r.x + r.w - q, y: qy, w: q, h: q } : null };
+    return { ...t, tx: r.x + left - tw, mid: band.y + band.h / 2, area, center: !sign, qr: q ? { x: r.x + r.w - q, y: band.y + (band.h - q) / 2, w: q, h: q } : null };
   };
   // Stacked: the text and the QR code above, the signature below.
   const stack = (): StampPlan => {
     const lower = band.h * 0.55;
     const gapV = Math.max(1.5, band.h * 0.05);
     const upper = band.h - lower - gapV;
-    const q = sign && o.qrUrl ? scannable(Math.min(upper, r.w * 0.3, 30)) : 0;
+    const q = qrIn(upper);
     const t = text(upper, r.w - inset - qrGap(q));
     const mid = band.y + lower + gapV + upper / 2;
     const area = { x: r.x + inset, y: band.y + thick, w: r.w - inset, h: lower - thick };
@@ -706,7 +711,7 @@ async function certificatePages(pdf: PDFDocument, input: RenderInputV3, certUrl:
   r = fact(M + col, y, "Signed-state fingerprint", a.completionHash, true);
   y = Math.min(l, r) - 10;
   l = fact(M, y, "Anchored on Horizen", a.anchorTxHash ?? "Anchoring: a transaction is on its way", Boolean(a.anchorTxHash));
-  r = fact(M + col, y, "Zero-knowledge proofs", "Each party can prove they signed, and when, without revealing the document: verified on zkVerify");
+  r = fact(M + col, y, "Zero-knowledge proofs", "Each party can prove they signed, and the date it was completed, without revealing the document: verified on zkVerify");
   y = Math.min(l, r) - 18;
 
   // Every signature, each in its stamp with the code and a QR code to this certificate, continuing on further pages.
@@ -777,18 +782,18 @@ async function certificatePages(pdf: PDFDocument, input: RenderInputV3, certUrl:
   }
   vy -= 10;
   const steps: [string, string][] = input.variant === "certificate" ? [
-    ["With no Attest service", "This certificate carries its own verifier. Open its attachments (any PDF reader lists them), save attest-verifier.html anywhere, open it in any browser and drop this PDF on it. It checks every step below on your device, reading only the public blockchain, and re-makes these pages from what was signed and anchored to show they are exactly Attest's certificate."],
+    ["With no Attest service", "This certificate carries its own verifier. Open its attachments (in a PDF reader's attachments panel), save attest-verifier.html anywhere, open it in any browser and drop this PDF on it. It checks every step below on your device, reading only the public blockchain, and re-makes these pages from what was signed and anchored to show they are exactly Attest's certificate."],
     ["The document", `The document stays with the parties: Attest never had it. Its SHA-256 is ${a.documentSha256}, the fingerprint every signer's statement names, and each party's signed copy carries it.`],
     ["Each signature", "attest-evidence.json, attached, holds for every signer the exact statement they signed, their passkey's public key, and the WebAuthn signature. Any WebAuthn library checks it: the signature covers the authenticator data and the SHA-256 of the client data, whose challenge is the SHA-256 of the statement."],
     ["The anchor", a.anchorTxHash ? `The evidence holds the exact signed-state text (SHA-256 ${a.completionHash}) and its Merkle path to the root that Horizen transaction ${a.anchorTxHash} recorded, and Attest's own anchor of the agreement, its signatures and these details. Any Horizen node confirms them.` : "The anchoring transaction appears on the live verification page as soon as it confirms."],
-    ["The proofs", "Each party can prove they signed, and when, with a zero-knowledge proof (Groth16) that reveals nothing else, verified on zkVerify, an independent network."],
+    ["The proofs", "Each party can prove they signed, and the date it was completed, with a zero-knowledge proof (Groth16) that reveals nothing else, verified on zkVerify, an independent network."],
     ["The standards", "WebAuthn (W3C) for signatures, SHA-256 (NIST FIPS 180-4) for fingerprints, Merkle trees for anchoring, Groth16 for zero-knowledge proofs. No proprietary format anywhere."],
   ] : [
-    ["With no Attest service", "This PDF carries its own verifier. Open its attachments (any PDF reader lists them), save attest-verifier.html anywhere, open it in any browser and drop this PDF on it. It checks every step below on your device, reading only the public blockchain, and re-makes these pages from what was signed to show they are exactly the signed copy."],
+    ["With no Attest service", "This PDF carries its own verifier. Open its attachments (in a PDF reader's attachments panel), save attest-verifier.html anywhere, open it in any browser and drop this PDF on it. It checks every step below on your device, reading only the public blockchain, and re-makes these pages from what was signed to show they are exactly the signed copy."],
     ["The document", `original-document.pdf, attached, is the document exactly as it was signed: its SHA-256 is ${a.documentSha256}, the fingerprint every signer's statement names.`],
     ["Each signature and entry", "attest-evidence.json, attached, holds for every signer the exact statement they signed, the exact text of their entries (its SHA-256 is in the statement), their passkey's public key, and the WebAuthn signature. Any WebAuthn library checks it: the signature covers the authenticator data and the SHA-256 of the client data, whose challenge is the SHA-256 of the statement."],
     ["The anchor", a.anchorTxHash ? `The evidence holds the exact signed-state text (SHA-256 ${a.completionHash}) and its Merkle path to the root that Horizen transaction ${a.anchorTxHash} recorded, and Attest's own anchor of the agreement, its signatures and these details. Any Horizen node confirms them.` : "The anchoring transaction appears on the live verification page as soon as it confirms."],
-    ["The proofs", "Each party can prove they signed, and when, with a zero-knowledge proof (Groth16) that reveals nothing else, verified on zkVerify, an independent network."],
+    ["The proofs", "Each party can prove they signed, and the date it was completed, with a zero-knowledge proof (Groth16) that reveals nothing else, verified on zkVerify, an independent network."],
     ["The standards", "WebAuthn (W3C) for signatures, SHA-256 (NIST FIPS 180-4) for fingerprints, Merkle trees for anchoring, Groth16 for zero-knowledge proofs. No proprietary format anywhere."],
   ];
   for (const [i, [title, body]] of steps.entries()) {
