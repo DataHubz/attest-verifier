@@ -40,7 +40,7 @@ shasum -a 256 attest-verifier.html
 npm test
 ```
 
-`npm test` cross-checks the Groth16 code against snarkjs, runs the signed-copy structure corpus in `test/structure/` (genuine copies, documents with names and attachments of their own, and one forged file per attack), and renders the fixtures in `test/renderer/` (renderer v2) and `test/renderer/v3/` (renderer v3) to the exact bytes Attest's app makes.
+`npm test` cross-checks the Groth16 code against snarkjs, runs the signed-copy structure corpus in `test/structure/` (genuine copies, documents with names and attachments of their own, and one forged file per attack), and renders the fixtures in `test/renderer/` (renderer v2) and `test/renderer/v3/` (renderer v3) to the exact bytes Attest's app makes, and checks that renderer v3 refuses the documents it must.
 
 The build is reproducible: the same sources and lockfile produce the same bytes, so the fingerprint matches the release's.
 
