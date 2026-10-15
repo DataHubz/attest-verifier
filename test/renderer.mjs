@@ -19,7 +19,7 @@ for (const [name, version] of [["pdf-lib", "1.17.1"], ["@pdf-lib/fontkit", "1.1.
   if (pkg.devDependencies[name] !== version || resolved !== version) { pinned++; console.log(`FAIL ${name}: package.json ${pkg.devDependencies[name]}, resolved ${resolved}, must be exactly ${version}`); }
 }
 console.log(`renderer libraries: ${3 - pinned}/3 pinned and resolved exactly`);
-const fonts = { sans: readFileSync("src/fonts/instrument-sans-400.ttf"), bold: readFileSync("src/fonts/instrument-sans-600.ttf"), mono: readFileSync("src/fonts/jetbrains-mono-400.ttf") };
+const fonts = { sans: readFileSync("src/fonts/instrument-sans-400.ttf"), bold: readFileSync("src/fonts/instrument-sans-600.ttf"), mono: readFileSync("src/fonts/jetbrains-mono-400.ttf"), noto: readFileSync("src/fonts/noto-sans-400.ttf"), notoBold: readFileSync("src/fonts/noto-sans-700.ttf") };
 let failed = 0;
 let total = 0;
 for (const [version, dir] of [["v2", "test/renderer"], ["v3", "test/renderer/v3"]]) {
@@ -38,7 +38,8 @@ for (const [version, dir] of [["v2", "test/renderer"], ["v3", "test/renderer/v3"
   const found = new Set(activeContent(await PDFDocument.load(Buffer.from(hostile.input.original, "base64"))));
   if (found.size < 8) { bad++; console.log(`FAIL ${version}: the detector finds only ${[...found].join(", ")} in the hostile original`); }
   for (const c of cases) {
-    const bytes = await render({ ...c.input, original: c.input.original === null ? null : new Uint8Array(Buffer.from(c.input.original, "base64")), fonts: { sans: new Uint8Array(fonts.sans), bold: new Uint8Array(fonts.bold), mono: new Uint8Array(fonts.mono) } });
+    const own = { sans: new Uint8Array(fonts.sans), bold: new Uint8Array(fonts.bold), mono: new Uint8Array(fonts.mono), ...(version === "v3" ? { noto: new Uint8Array(fonts.noto), notoBold: new Uint8Array(fonts.notoBold) } : {}) };
+    const bytes = await render({ ...c.input, original: c.input.original === null ? null : new Uint8Array(Buffer.from(c.input.original, "base64")), fonts: own });
     const h = createHash("sha256").update(bytes).digest("hex");
     if (h !== expected[c.name]) { bad++; console.log(`FAIL ${version} ${c.name}: ${h}, expected ${expected[c.name]}`); }
     const left = activeContent(await PDFDocument.load(bytes));
