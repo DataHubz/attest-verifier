@@ -8,8 +8,9 @@ import { checkStatus } from "@digitalbazaar/vc-bitstring-status-list";
 import * as cborg from "cborg";
 import { verifyGroth16 } from "./groth16.mjs";
 import { p256 } from "@noble/curves/p256";
-// Renderer v2 re-makes a v5 signed copy's visible pages; the certificate fonts it embeds travel with it.
+// Renderers v2 and v3 re-make a v5 or v6 signed copy's visible pages; the certificate fonts they embed travel with them.
 import { renderV2, RENDERER_V2 } from "./renderer/v2.ts";
+import { renderV3, RENDERER_V3 } from "./renderer/v3.ts";
 import { PDFArray, PDFDict, PDFDocument, PDFName, PDFRawStream, PDFRef, decodePDFRawStream } from "pdf-lib";
 import instrumentSans400 from "./fonts/instrument-sans-400.ttf";
 import instrumentSans600 from "./fonts/instrument-sans-600.ttf";
@@ -87,6 +88,7 @@ window.AttestLibs = {
   verifyGroth16,
   renderers: {
     [RENDERER_V2]: (input) => renderV2({ ...input, fonts: { sans: instrumentSans400, bold: instrumentSans600, mono: jetbrainsMono400 } }),
+    [RENDERER_V3]: (input) => renderV3({ ...input, fonts: { sans: instrumentSans400, bold: instrumentSans600, mono: jetbrainsMono400 } }),
   },
   circuits: {
     agreement_membership: agreementMembership,
