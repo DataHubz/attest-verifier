@@ -1,4 +1,4 @@
-// Renderer determinism: the fixture cases must render to the exact bytes Attest's app renders, with no active content
+// Renderer determinism, on the pinned libraries: the fixture cases must render to the exact bytes Attest's app renders, with no active content
 // left. Renderer v2 (test/renderer): a document with a script, an open action and named destinations; one with every
 // kind of active content and links that aren't to the web; twenty signers with tiny fields and sixty steps; in each
 // variant, the certificate too. Renderer v3 (test/renderer/v3): the same cases, a tester's agreement whose fields reach
@@ -11,6 +11,14 @@ import path from "node:path";
 
 const require = createRequire(import.meta.url);
 const { PDFDocument } = require("pdf-lib");
+// The renderers' bytes depend on these libraries: pinned exactly in package.json, and resolved at those versions.
+const pkg = JSON.parse(readFileSync("package.json", "utf8"));
+let pinned = 0;
+for (const [name, version] of [["pdf-lib", "1.17.1"], ["@pdf-lib/fontkit", "1.1.1"], ["qrcode", "1.5.4"]]) {
+  const resolved = JSON.parse(readFileSync(require.resolve(`${name}/package.json`), "utf8")).version;
+  if (pkg.devDependencies[name] !== version || resolved !== version) { pinned++; console.log(`FAIL ${name}: package.json ${pkg.devDependencies[name]}, resolved ${resolved}, must be exactly ${version}`); }
+}
+console.log(`renderer libraries: ${3 - pinned}/3 pinned and resolved exactly`);
 const fonts = { sans: readFileSync("src/fonts/instrument-sans-400.ttf"), bold: readFileSync("src/fonts/instrument-sans-600.ttf"), mono: readFileSync("src/fonts/jetbrains-mono-400.ttf") };
 let failed = 0;
 let total = 0;
@@ -40,4 +48,4 @@ for (const [version, dir] of [["v2", "test/renderer"], ["v3", "test/renderer/v3"
   failed += bad;
   total += cases.length;
 }
-process.exit(failed ? 1 : 0);
+process.exit(failed || pinned ? 1 : 0);
