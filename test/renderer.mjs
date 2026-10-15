@@ -2,7 +2,10 @@
 // left. Renderer v2 (test/renderer): a document with a script, an open action and named destinations; one with every
 // kind of active content and links that aren't to the web; twenty signers with tiny fields and sixty steps; in each
 // variant, the certificate too. Renderer v3 (test/renderer/v3): the same cases, a tester's agreement whose fields reach
-// into the labels above them and sit on their lines, and a field of every size the composer makes and smaller.
+// into the labels above them and sit on their lines, a field of every size the composer makes and smaller, turned,
+// cropped and offset pages, pages whose content tries to change what follows it or leaves a text object, path, clip,
+// marked content or compatibility section open, content in every filter and predictor pdf.js decodes, annotations of
+// every kind (drawn as pdf.js prints them, or not), and documents the renderer must refuse.
 import { build } from "esbuild";
 import { readFileSync, rmSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -39,7 +42,16 @@ for (const [version, dir] of [["v2", "test/renderer"], ["v3", "test/renderer/v3"
   if (found.size < 8) { bad++; console.log(`FAIL ${version}: the detector finds only ${[...found].join(", ")} in the hostile original`); }
   for (const c of cases) {
     const own = { sans: new Uint8Array(fonts.sans), bold: new Uint8Array(fonts.bold), mono: new Uint8Array(fonts.mono), ...(version === "v3" ? { noto: new Uint8Array(fonts.noto), notoBold: new Uint8Array(fonts.notoBold) } : {}) };
-    const bytes = await render({ ...c.input, original: c.input.original === null ? null : new Uint8Array(Buffer.from(c.input.original, "base64")), fonts: own });
+    const input = { ...c.input, original: c.input.original === null ? null : new Uint8Array(Buffer.from(c.input.original, "base64")), fonts: own };
+    // A document renderer v3 can't vouch for (content it can't read as every reader does, an annotation whose look a
+    // reader would make up): Attest refuses it before anyone signs, and the renderer throws on it.
+    if (expected[c.name] === "refused") {
+      let threw = false;
+      try { await render(input); } catch (e) { threw = String(e?.message ?? "").startsWith("Renderer v3 can't make a copy"); }
+      if (!threw) { bad++; console.log(`FAIL ${version} ${c.name}: rendered, expected renderer v3 to refuse it`); }
+      continue;
+    }
+    const bytes = await render(input);
     const h = createHash("sha256").update(bytes).digest("hex");
     if (h !== expected[c.name]) { bad++; console.log(`FAIL ${version} ${c.name}: ${h}, expected ${expected[c.name]}`); }
     const left = activeContent(await PDFDocument.load(bytes));
