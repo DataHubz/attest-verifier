@@ -2,14 +2,18 @@
 // (DataHubz/attest-verifier, src/renderer/v3.ts): a verifier re-makes a signed copy's visible pages from what was
 // signed and compares them with the copy. Frozen: a change to what it draws is a new renderer version.
 //
-// v3 is v2 with two changes. First, everything Attest draws for an entry stays inside the field the sender placed. A
+// v3 is v2 with these changes. First, everything Attest draws for an entry stays inside the field the sender placed. A
 // signature's stamp is laid out within its field (v2 grew a smaller one to 120 by 30 points about its center, over the
 // document around it, and set its label and code along the field's top and bottom edges, where the document's own lines
 // and labels often are); its parts keep clear of the edges, sit along the bottom of the field as a signature sits on
 // its line, and shrink or leave out the stamp's own text in a small field. A text entry wraps or shrinks until it fits.
-// Second, the certificate pages say what a Share proof shows, the date the agreement was completed (v2 said "and
-// when"), and that a PDF reader's attachments panel lists the attached files (v2 said any reader lists them).
-// Agreements whose completion details name v2 keep v2, unchanged.
+// Second, fields land on the page as readers show it (its CropBox, turned by /Rotate, at /UserUnit), and everything is
+// drawn upright on it; v2 used the MediaBox from its origin. Third, the page's own content is drawn as a form XObject,
+// guarded against pdf.js's shared stack of saved states, so it can't move, hide or stretch what follows it. Fourth,
+// what people typed is drawn on one line with a glyph for every character (charset-v3.ts; Noto Sans when Helvetica and
+// Instrument Sans have none). Fifth, the certificate pages say what a Share proof shows, the date the agreement was
+// completed (v2 said "and when"), and that a PDF reader's attachments panel lists the attached files (v2 said any reader
+// lists them). Agreements whose completion details name v2 keep v2, unchanged.
 //
 // Deterministic in every JavaScript engine: pdf-lib's resource names come from a counter instead of Math.sin, the
 // seal and the guilloche use their own sine (basic arithmetic only), dates are formatted here, QR codes are drawn as
