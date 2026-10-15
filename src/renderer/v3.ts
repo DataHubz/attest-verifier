@@ -21,10 +21,14 @@ import {
   PDFDict,
   PDFDocument,
   PDFName,
+  PDFNumber,
+  PDFRawStream,
   PDFRef,
   StandardFonts,
   beginText,
   clip,
+  concatTransformationMatrix,
+  decodePDFRawStream,
   endPath,
   endText,
   popGraphicsState,
@@ -41,6 +45,7 @@ import {
 } from "pdf-lib";
 import fontkit from "@pdf-lib/fontkit";
 import QRCode from "qrcode";
+import { printableV3 } from "./charset-v3";
 
 export const RENDERER_V3 = "attest.render.v3";
 
@@ -67,7 +72,11 @@ export interface RenderInputV3 {
   signers: { commitment: string; name: string; signedAt: string }[];
   /** Every entry, by field id (from the signers' entries). */
   entries: Record<string, string>;
-  fonts: { sans: Uint8Array; bold: Uint8Array; mono: Uint8Array };
+  /**
+   * Instrument Sans and JetBrains Mono for the certificate pages, and Noto Sans (regular and bold, cut to charset-v3.ts)
+   * for anything people typed that Helvetica or Instrument Sans has no glyph for.
+   */
+  fonts: { sans: Uint8Array; bold: Uint8Array; mono: Uint8Array; noto?: Uint8Array; notoBold?: Uint8Array };
 }
 
 // ---- Determinism -------------------------------------------------------------------------------------
@@ -252,6 +261,240 @@ function dropUnreachable(pdf: PDFDocument) {
   for (const [ref] of pdf.context.enumerateIndirectObjects()) if (!keep.has(ref)) pdf.context.delete(ref);
 }
 
+// ---- The document's content, kept to itself ------------------------------------------------------------
+
+const WHITE = new Set([0, 9, 10, 12, 13, 32]);
+const DELIMS = new Set([40, 41, 60, 62, 91, 93, 123, 125, 47, 37]);
+const regular = (c: number) => !WHITE.has(c) && !DELIMS.has(c);
+
+/**
+ * The most graphics states a content stream could restore (Q) beyond the ones it saved itself (q), at any point, as any
+ * reader may parse it. Readers that follow the PDF specification never let a form's content restore a state saved
+ * outside the form; pdf.js keeps one stack for the whole page and does, so a document ending in "Q Q Q 1 0 0 1 0 -118
+ * cm" would move everything drawn after it. Each content stream that could is preceded by this many saves of its own.
+ *
+ * An upper bound, read as pdf.js's lexer reads: comments, strings, hex strings and names are skipped; every Q in a run
+ * of other characters counts as a restore (pdf.js splits "QQQ" and "fQ" into operators), and only a q standing alone
+ * counts as a save. After an inline image, whose end readers find in different ways, every Q byte counts and no save
+ * does.
+ */
+export function unbalancedRestores(b: Uint8Array): number {
+  const n = b.length;
+  let saved = 0;
+  let worst = 0;
+  const restore = () => {
+    saved--;
+    if (-saved > worst) worst = -saved;
+  };
+  let i = 0;
+  while (i < n) {
+    const c = b[i];
+    if (WHITE.has(c)) i++;
+    else if (c === 37) while (i < n && b[i] !== 10 && b[i] !== 13) i++;
+    else if (c === 40) {
+      // A string: nested parentheses, and a backslash escapes the next byte.
+      let depth = 1;
+      i++;
+      while (i < n && depth > 0) {
+        const x = b[i++];
+        if (x === 92) i++;
+        else if (x === 40) depth++;
+        else if (x === 41) depth--;
+      }
+    } else if (c === 60 && b[i + 1] === 60) i += 2;
+    else if (c === 60) {
+      while (i < n && b[i] !== 62) i++;
+      i++;
+    } else if (c === 47) {
+      i++;
+      while (i < n && regular(b[i])) i++;
+    } else if (DELIMS.has(c)) i++;
+    else {
+      let j = i;
+      let inline = false;
+      while (j < n && regular(b[j])) {
+        if (b[j] === 66 && b[j + 1] === 73) inline = true;
+        j++;
+      }
+      if (j - i === 1 && c === 113) saved++;
+      else for (let k = i; k < j; k++) if (b[k] === 81) restore();
+      if (inline) {
+        for (let k = j; k < n; k++) if (b[k] === 81) restore();
+        return worst;
+      }
+      i = j;
+    }
+  }
+  return worst;
+}
+
+/** Filters this renderer reads content through (pdf-lib's); content behind any other filter isn't drawn. */
+const READABLE_FILTERS = new Set(["FlateDecode", "LZWDecode", "ASCII85Decode", "ASCIIHexDecode", "RunLengthDecode"]);
+
+/**
+ * A content stream's operators, as this renderer reads them: all of them, or as many as decode before an error (as
+ * pdf.js draws those), or none behind a filter or predictor it doesn't read.
+ */
+function contentOf(pdf: PDFDocument, v: unknown): { data: Uint8Array; whole: boolean } {
+  const s = v instanceof PDFRef ? pdf.context.lookup(v) : v;
+  const none = { data: new Uint8Array(), whole: false };
+  if (!(s instanceof PDFRawStream)) return none;
+  const lookup = (x: unknown) => (x instanceof PDFRef ? pdf.context.lookup(x) : x);
+  const filter = lookup(s.dict.get(PDFName.of("Filter")));
+  const filters = filter instanceof PDFArray ? filter.asArray().map(lookup) : filter === undefined ? [] : [filter];
+  if (!filters.every((f) => f instanceof PDFName && READABLE_FILTERS.has(f.decodeText()))) return none;
+  const params = lookup(s.dict.get(PDFName.of("DecodeParms")));
+  const predicted = (p: unknown) => {
+    const d = lookup(p);
+    const pr = d instanceof PDFDict ? lookup(d.get(PDFName.of("Predictor"))) : undefined;
+    return pr instanceof PDFNumber && pr.asNumber() > 1;
+  };
+  if (params instanceof PDFArray ? params.asArray().some(predicted) : predicted(params)) return none;
+  let stream: { decode: () => Uint8Array; buffer?: Uint8Array; bufferLength?: number };
+  try {
+    stream = decodePDFRawStream(s) as unknown as typeof stream;
+  } catch {
+    return none;
+  }
+  try {
+    return { data: stream.decode(), whole: true };
+  } catch {
+    return { data: stream.buffer ? stream.buffer.slice(0, stream.bufferLength ?? 0) : new Uint8Array(), whole: false };
+  }
+}
+
+const ascii = (s: string) => Uint8Array.from(s, (ch) => ch.charCodeAt(0));
+function joined(parts: Uint8Array[]): Uint8Array {
+  const out = new Uint8Array(parts.reduce((t, p) => t + p.length, 0));
+  let at = 0;
+  for (const p of parts) {
+    out.set(p, at);
+    at += p.length;
+  }
+  return out;
+}
+/** Content preceded by as many saves as it could restore beyond its own. */
+const guarded = (data: Uint8Array) => {
+  const d = unbalancedRestores(data);
+  return d ? joined([ascii(`${"q ".repeat(d)}\n`), data]) : data;
+};
+
+/**
+ * Every other content stream a page's content may run (forms, Type 3 glyphs, soft masks), guarded the same way, so
+ * none can restore a state saved outside it in any reader. Content this renderer can't read entirely is replaced by what
+ * it read, so what every reader draws is exactly what was checked.
+ */
+function guardContentStreams(pdf: PDFDocument) {
+  const ctx = pdf.context;
+  const lookup = (x: unknown) => (x instanceof PDFRef ? ctx.lookup(x) : x);
+  const run = new Set<PDFRef>();
+  for (const [ref, o] of ctx.enumerateIndirectObjects()) {
+    const dict = o instanceof PDFDict ? o : o instanceof PDFRawStream ? o.dict : null;
+    if (!dict) continue;
+    if (o instanceof PDFRawStream && nameIn(pdf, dict.get(PDFName.of("Subtype"))) === "Form") run.add(ref);
+    if (nameIn(pdf, dict.get(PDFName.of("Subtype"))) === "Type3") {
+      const procs = lookup(dict.get(PDFName.of("CharProcs")));
+      if (procs instanceof PDFDict) for (const [, v] of procs.entries()) if (v instanceof PDFRef) run.add(v);
+    }
+    const mask = lookup(dict.get(PDFName.of("SMask")));
+    const group = mask instanceof PDFDict ? mask.get(PDFName.of("G")) : undefined;
+    if (group instanceof PDFRef) run.add(group);
+  }
+  const skip = new Set(["Filter", "DecodeParms", "Length", "DL"]);
+  for (const ref of run) {
+    const s = ctx.lookup(ref);
+    if (!(s instanceof PDFRawStream)) continue;
+    const { data, whole } = contentOf(pdf, s);
+    if (whole && unbalancedRestores(data) === 0) continue;
+    const fresh = ctx.flateStream(guarded(data));
+    for (const [k, v] of s.dict.entries()) if (!skip.has(k.decodeText())) fresh.dict.set(k, v);
+    ctx.assign(ref, fresh);
+  }
+}
+
+/** A value a page inherits (it or its nearest ancestor in the page tree), as readers look it up. */
+function inherited(pdf: PDFDocument, page: PDFDict, key: string): unknown {
+  const seen = new Set<unknown>();
+  let d: unknown = page;
+  while (d instanceof PDFDict && !seen.has(d)) {
+    seen.add(d);
+    const v = d.get(PDFName.of(key));
+    if (v !== undefined) return v instanceof PDFRef ? pdf.context.lookup(v) : v;
+    const parent = d.get(PDFName.of("Parent"));
+    d = parent instanceof PDFRef ? pdf.context.lookup(parent) : parent;
+  }
+  return undefined;
+}
+type Rect4 = [number, number, number, number];
+/** A page box as pdf.js reads it: four numbers, in either order, with an area; or none. */
+function boxOf(pdf: PDFDocument, page: PDFDict, key: string): Rect4 | null {
+  const v = inherited(pdf, page, key);
+  if (!(v instanceof PDFArray) || v.size() !== 4) return null;
+  const n = v.asArray().map((x) => (x instanceof PDFRef ? pdf.context.lookup(x) : x));
+  if (!n.every((x) => x instanceof PDFNumber)) return null;
+  const [a, b, c, d] = n.map((x) => (x as PDFNumber).asNumber());
+  const r: Rect4 = [Math.min(a, c), Math.min(b, d), Math.max(a, c), Math.max(b, d)];
+  return r[2] - r[0] > 0 && r[3] - r[1] > 0 ? r : null;
+}
+
+/**
+ * The page as readers show it, from pdf.js's own rules (the field placer and the signing page draw it with pdf.js):
+ * the CropBox, within the MediaBox, turned by /Rotate, at /UserUnit points to the unit. Fields are fractions of this
+ * page from its top-left. `m` maps the shown page, in points from its bottom-left, to the page's own coordinates.
+ */
+export function shownPage(pdf: PDFDocument, page: PDFPage): { width: number; height: number; m: [number, number, number, number, number, number]; media: Rect4 } {
+  const node = page.node;
+  const media = boxOf(pdf, node, "MediaBox") ?? [0, 0, 612, 792];
+  const crop = boxOf(pdf, node, "CropBox") ?? media;
+  let view = media;
+  if (crop.some((v, k) => v !== media[k])) {
+    const x0 = Math.max(crop[0], media[0]), x1 = Math.min(crop[2], media[2]);
+    const y0 = Math.max(crop[1], media[1]), y1 = Math.min(crop[3], media[3]);
+    if (x1 - x0 > 0 && y1 - y0 > 0) view = [x0, y0, x1, y1];
+  }
+  const r = inherited(pdf, node, "Rotate");
+  let rotate = r instanceof PDFNumber ? r.asNumber() : 0;
+  if (rotate % 90 !== 0) rotate = 0;
+  else if (rotate >= 360) rotate %= 360;
+  else if (rotate < 0) rotate = ((rotate % 360) + 360) % 360;
+  const uu = node.get(PDFName.of("UserUnit"));
+  const u = uu instanceof PDFRef ? pdf.context.lookup(uu) : uu;
+  const unit = u instanceof PDFNumber && u.asNumber() > 0 ? u.asNumber() : 1;
+  const [x0, y0, x1, y1] = view;
+  const [W, H] = [(x1 - x0) * unit, (y1 - y0) * unit];
+  const k = 1 / unit;
+  const m: [number, number, number, number, number, number] =
+    rotate === 90 ? [0, k, -k, 0, x1, y0] : rotate === 180 ? [-k, 0, 0, -k, x1, y1] : rotate === 270 ? [0, -k, k, 0, x0, y1] : [k, 0, 0, k, x0, y0];
+  return rotate % 180 === 0 ? { width: W, height: H, m, media } : { width: H, height: W, m, media };
+}
+
+/**
+ * The page's own content drawn as one form XObject, which readers draw with its own graphics state: whatever the
+ * content leaves changed (an extra restore, a moved coordinate system, invisible or stretched text, a clip, an open
+ * string or inline image) ends with the form, and what Attest draws next starts from the page's own state. The content
+ * is read as pdf.js reads a page (its streams joined, any that doesn't decode left out) and guarded against pdf.js's
+ * shared stack; its resources stay its own, so it can't name anything Attest adds.
+ */
+function isolatePage(pdf: PDFDocument, page: PDFPage, media: Rect4) {
+  const ctx = pdf.context;
+  const node = page.node;
+  const raw = node.get(PDFName.of("Contents"));
+  const contents = raw instanceof PDFRef ? ctx.lookup(raw) : raw;
+  const data =
+    contents instanceof PDFArray
+      ? joined(contents.asArray().map((s) => contentOf(pdf, s)).filter((c) => c.whole).map((c) => c.data))
+      : contentOf(pdf, contents).data;
+  const res = inherited(pdf, node, "Resources");
+  const form = ctx.flateStream(guarded(data), {
+    Type: "XObject",
+    Subtype: "Form",
+    BBox: media,
+    Resources: res instanceof PDFDict ? res : ctx.obj({}),
+  });
+  node.set(PDFName.of("Resources"), ctx.obj({ XObject: { AttestPage: ctx.register(form) } }));
+  node.set(PDFName.of("Contents"), ctx.register(ctx.flateStream("q /AttestPage Do Q\n")));
+}
+
 // ---- Drawing -----------------------------------------------------------------------------------------
 
 const INK = rgb(0.039, 0.145, 0.251);
@@ -323,6 +566,51 @@ function wrap(text: string, font: PDFFont, size: number, width: number): string[
 }
 const chunk = (s: string, n: number) => Array.from({ length: Math.ceil(s.length / n) }, (_, i) => s.slice(i * n, i * n + n));
 
+/**
+ * Text people typed, on one line: a line break of any kind (\n, \r, U+2028, U+2029, U+0085, \v, \f) would start a new
+ * line below wherever it's drawn, so each run of them is one space.
+ */
+const oneLine = (s: string) => s.replace(/[\n\r\u2028\u2029\u0085\u000b\u000c]+/g, " ");
+
+/**
+ * Text people typed, as v3 prints it: on one line, composed (NFC), and each character it can't print (charset-v3.ts)
+ * shown as U+FFFD, so no reader ever draws a missing glyph. A composed character v3 has no glyph for is drawn as its
+ * parts, when it has those.
+ */
+function printable(s: string): string {
+  let out = "";
+  for (const ch of oneLine(s).normalize("NFC")) {
+    if (printableV3(ch.codePointAt(0)!)) out += ch;
+    else {
+      const parts = ch.normalize("NFD");
+      out += [...parts].every((c) => printableV3(c.codePointAt(0)!)) ? parts : "\uFFFD";
+    }
+  }
+  return out;
+}
+
+/** Whether a font has a glyph for every character of a text. */
+const covers = (font: PDFFont, text: string) => {
+  const set = new Set(font.getCharacterSet());
+  return [...text].every((ch) => set.has(ch.codePointAt(0)!));
+};
+
+/** Noto Sans, embedded once and only when some text needs it. */
+function notoFonts(pdf: PDFDocument, input: RenderInputV3) {
+  let regular: PDFFont | null = null;
+  let bold: PDFFont | null = null;
+  const embed = async (bytes: Uint8Array | undefined) => {
+    if (!bytes) throw new Error("Renderer v3 needs Noto Sans (fonts.noto and fonts.notoBold)");
+    pdf.registerFontkit(fontkit);
+    return pdf.embedFont(bytes, { subset: true });
+  };
+  return {
+    regular: async () => (regular ??= await embed(input.fonts.noto)),
+    bold: async () => (bold ??= await embed(input.fonts.notoBold)),
+  };
+}
+type Noto = ReturnType<typeof notoFonts>;
+
 type Box = { x: number; y: number; w: number; h: number };
 const clampTo = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
@@ -386,8 +674,11 @@ function drawMark(page: PDFPage, mark: Mark, area: Box, bounds: Box, center: boo
 
 /** The stamp's own text: at most this size, and at least this, or the line is left out (every page's foot carries the code). */
 const STAMP_TEXT = { max: 5, min: 4, leading: 1.22 };
-/** The QR code: at most this tall, and this share of the field's width; under the minimum, too fine to scan, it's left out. */
-const STAMP_QR = { max: 24, share: 0.22, min: 12 };
+/**
+ * The QR code: at most this tall, and this share of the field's width; under the minimum, which a phone scans reliably
+ * from a page printed at 300 dpi (0.22 mm modules), it's left out.
+ */
+const STAMP_QR = { max: 24, share: 0.22, min: 18 };
 
 /** Where a stamp's parts go: its text (its lines, their size, left edge and middle), the signature's area, and the QR code. */
 interface StampPlan { lines: string[]; fs: number; tx: number; mid: number; area: Box; center: boolean; qr: Box | null }
@@ -401,11 +692,11 @@ interface StampPlan { lines: string[]; fs: number; tx: number; mid: number; area
  * width (at most 3 points) at the sides. Everything sits in a band along the bottom of what is left, as a signature
  * sits on its line, which leaves free the top 28% (at most 9 points), where a label above the field often reaches into
  * it. The QR code is centered on the band, at most 24 points and 22% of the field's width, so it never dominates the
- * field; one under 12 points, too fine for a phone's camera, is left out.
+ * field; one under 18 points, too fine to scan reliably from a printed page, is left out.
  *
  * Side by side, the signature comes first, then the text, then the QR code. In a field too tall for that, the text and
- * the QR code go above the signature, when that keeps more of the text with the signature at least 80% as large, or the
- * same text with the signature a quarter larger. The text is as large as fits, at most 5 points and within 40% of the
+ * the QR code go above the signature, when that keeps the QR code (when side by side does), and more of the text with
+ * the signature at least 80% as large, or the same text with the signature a quarter larger. The text is as large as fits, at most 5 points and within 40% of the
  * room beside the QR code (initials: 60% of the field); a field too small for it at 4 points leaves out the label, then
  * the day, then the code, so no line is ever smaller, and the foot of every page carries the code with the link to
  * verify.
@@ -466,10 +757,11 @@ function drawStamp(page: PDFPage, box: Box, mark: Mark, o: { initials: boolean; 
   };
   const a = side();
   const b = stack();
-  // Stacked when that keeps more of the text with the signature at least 80% as large, or the same text (no smaller)
-  // with the signature a quarter larger.
+  // Stacked when that keeps the QR code (if side by side does) and more of the text with the signature at least 80% as
+  // large, or the same text (no smaller) with the signature a quarter larger.
   const [ma, mb] = [markSize(mark, a.area).h, markSize(mark, b.area).h];
-  const plan = (b.lines.length > a.lines.length && mb >= ma * 0.8) || (b.lines.length === a.lines.length && b.fs >= a.fs * 0.9 && mb > ma * 1.25) ? b : a;
+  const keepsQr = Boolean(b.qr) || !a.qr;
+  const plan = keepsQr && ((b.lines.length > a.lines.length && mb >= ma * 0.8) || (b.lines.length === a.lines.length && b.fs >= a.fs * 0.9 && mb > ma * 1.25)) ? b : a;
   // The bracket, along the band.
   const line = (x1: number, y1: number, x2: number, y2: number) => page.drawLine({ start: { x: x1, y: y1 }, end: { x: x2, y: y2 }, thickness: thick, color: STAMP });
   const bx = r.x + thick / 2;
@@ -579,49 +871,53 @@ export async function renderV3(input: RenderInputV3): Promise<Uint8Array> {
   const pdf = await PDFDocument.load(input.original, { updateMetadata: false });
   deterministic(pdf);
   stripActiveContent(pdf);
+  guardContentStreams(pdf);
   const { agreement: a, details: d } = input;
   const code = d.verifyCode;
   const certUrl = code ? `${input.appUrl}/v/${fmtCode(code)}` : `${input.appUrl}/a/${a.id}`;
   const signer = new Map(input.signers.map((s) => [s.commitment, s]));
   const text = await pdf.embedFont(StandardFonts.Helvetica);
   const textBold = await pdf.embedFont(StandardFonts.HelveticaBold);
-  let unicode: PDFFont | null = null;
-  const unicodeFont = async () => {
-    if (!unicode) {
-      pdf.registerFontkit(fontkit);
-      unicode = await pdf.embedFont(input.fonts.sans, { subset: true });
-    }
-    return unicode;
-  };
+  const noto = notoFonts(pdf, input);
 
-  // Each entry where its signer made it (positions are fractions from the top-left), each signature in its stamp.
+  // Each page's own content, kept to itself; what Attest draws goes on top, on the page as it is shown, in points from
+  // its bottom-left.
   const pages = pdf.getPages();
+  const shown = pages.map((p) => shownPage(pdf, p));
+  for (const [i, p] of pages.entries()) {
+    isolatePage(pdf, p, shown[i].media);
+    p.pushOperators(pushGraphicsState(), concatTransformationMatrix(...shown[i].m));
+  }
+  // Each entry where its signer made it (positions are fractions of the shown page from its top-left), each signature
+  // in its stamp.
   const adopted = new Map<string, string>();
   for (const [id, type, pageIndex, fx, fy, fw, fh, who] of d.fields) {
-    const value = input.entries[id];
+    const raw = input.entries[id];
     const page = pages[pageIndex];
-    if (!value || !page) continue;
-    const { width, height } = page.getSize();
+    if (!raw || !page) continue;
+    const image = raw.startsWith("data:image/png;base64,");
+    const value = image ? raw : printable(raw);
+    const { width, height } = shown[pageIndex];
     const box = { x: fx * width, y: height - (fy + fh) * height, w: fw * width, h: fh * height };
     if (type === "signature" || type === "initials") {
-      const image = value.startsWith("data:image/png;base64,");
       if (type === "signature" && image && !adopted.has(who)) adopted.set(who, value);
       // The stamp stays inside the field, whatever its size.
-      const mark = image ? markOf(await pdf.embedPng(value)) : { name: value, font: encodes(textBold, value) ? textBold : await unicodeFont() };
+      const mark = image ? markOf(await pdf.embedPng(value)) : { name: value, font: encodes(textBold, value) ? textBold : await noto.bold() };
       drawStamp(page, box, mark, { initials: type === "initials", code, signedAt: signer.get(who)?.signedAt ?? null, qrUrl: certUrl, font: text, bold: textBold });
     } else {
-      // Helvetica covers Western European text; anything else is set in the embedded Instrument Sans.
-      drawEntry(page, value, box, encodes(text, value) ? text : await unicodeFont());
+      // Helvetica covers Western European text; anything else is set in the embedded Noto Sans.
+      drawEntry(page, value, box, encodes(text, value) ? text : await noto.regular());
     }
   }
-  // A quiet seal line at the foot of every page of the document.
-  for (const p of pages) {
-    const { width } = p.getSize();
+  // A quiet seal line at the foot of every page of the document, as it is shown.
+  for (const [i, p] of pages.entries()) {
+    const { width } = shown[i];
     p.drawLine({ start: { x: 24, y: 20 }, end: { x: width - 24, y: 20 }, thickness: 0.4, color: HAIR });
     p.drawCircle({ x: 28, y: 11, size: 3, color: ACCENT });
     p.drawText(`Sealed by DataHubz Attest${code ? `  ·  ${fmtCode(code)}` : ""}  ·  verify at ${certUrl}`, { x: 36, y: 8.5, size: 6.5, font: text, color: MUTED });
+    p.pushOperators(popGraphicsState());
   }
-  if (input.variant === "full") await certificatePages(pdf, input, certUrl, adopted, { text, textBold });
+  if (input.variant === "full") await certificatePages(pdf, input, certUrl, adopted, { text, textBold }, noto);
   return finish(pdf);
 }
 
@@ -645,11 +941,11 @@ async function certificateV3(input: RenderInputV3): Promise<Uint8Array> {
   const certUrl = code ? `${input.appUrl}/v/${fmtCode(code)}` : `${input.appUrl}/a/${input.agreement.id}`;
   const text = await pdf.embedFont(StandardFonts.Helvetica);
   const textBold = await pdf.embedFont(StandardFonts.HelveticaBold);
-  await certificatePages(pdf, input, certUrl, new Map(), { text, textBold });
+  await certificatePages(pdf, input, certUrl, new Map(), { text, textBold }, notoFonts(pdf, input));
   return finish(pdf);
 }
 
-async function certificatePages(pdf: PDFDocument, input: RenderInputV3, certUrl: string, adopted: Map<string, string>, std: { text: PDFFont; textBold: PDFFont }) {
+async function certificatePages(pdf: PDFDocument, input: RenderInputV3, certUrl: string, adopted: Map<string, string>, std: { text: PDFFont; textBold: PDFFont }, noto: Noto) {
   const { agreement: a, details: d } = input;
   pdf.registerFontkit(fontkit);
   const sans = await pdf.embedFont(input.fonts.sans, { subset: true });
@@ -671,15 +967,23 @@ async function certificatePages(pdf: PDFDocument, input: RenderInputV3, certUrl:
     page.drawText("Attest", { x: M + bold.widthOfTextAtSize("DataHubz ", 13), y: H - 52, size: 13, font: bold, color: ACCENT });
     page.drawText(kicker, { x: M, y: H - 98, size: 22, font: bold, color: NAVY });
   };
-  const ordered = d.signers.map((c) => input.signers.find((s) => s.commitment === c)).filter((s): s is RenderInputV3["signers"][number] => Boolean(s));
+  const ordered = d.signers
+    .map((c) => input.signers.find((s) => s.commitment === c))
+    .filter((s): s is RenderInputV3["signers"][number] => Boolean(s))
+    .map((s) => ({ ...s, name: printable(s.name) }));
+  // Names and the title in Instrument Sans when it has every glyph they need, in Noto Sans when it doesn't.
+  const boldFor = async (t: string) => (covers(bold, t) ? bold : await noto.bold());
+  const sansFor = async (t: string) => (covers(sans, t) ? sans : await noto.regular());
+  const title = printable(a.title);
+  const titleFont = await boldFor(title);
 
   // ---- The certificate -------------------------------------------------------------------------------
   const p = pdf.addPage([W, H]);
   header(p, "Certificate of completion");
   seal(p, bold, W - M - 50, H - 128 - 6, 52);
   let y = H - 128 - 46;
-  for (const ln of wrap(a.title, bold, 15, W - 2 * M - 120)) {
-    p.drawText(ln, { x: M, y, size: 15, font: bold, color: INK });
+  for (const ln of wrap(title, titleFont, 15, W - 2 * M - 120)) {
+    p.drawText(ln, { x: M, y, size: 15, font: titleFont, color: INK });
     y -= 20;
   }
   y -= 4;
@@ -732,10 +1036,11 @@ async function certificatePages(pdf: PDFDocument, input: RenderInputV3, certUrl:
       floor = 70;
     }
     const img = adopted.get(s.commitment);
-    const mark = img ? markOf(await pdf.embedPng(img)) : { name: s.name, font: encodes(std.textBold, s.name) ? std.textBold : bold };
+    const nameFont = await boldFor(s.name);
+    const mark = img ? markOf(await pdf.embedPng(img)) : { name: s.name, font: encodes(std.textBold, s.name) ? std.textBold : nameFont };
     drawStamp(sp, { x: M, y: y - 42, w: 170, h: 42 }, mark, { initials: false, code: d.verifyCode, signedAt: s.signedAt, qrUrl: certUrl, font: std.text, bold: std.textBold });
     const x2 = M + 190;
-    sp.drawText(s.name, { x: x2, y: y - 14, size: 9.5, font: bold, color: INK });
+    sp.drawText(s.name, { x: x2, y: y - 14, size: 9.5, font: nameFont, color: INK });
     sp.drawText(`Signed ${fmtUtc(s.signedAt)}, with a passkey only they control`, { x: x2, y: y - 27, size: 8.5, font: sans, color: BODY });
     sp.drawCircle({ x: W - M - 6, y: y - 18, size: 6, color: SUCCESS });
     y -= 54;
@@ -764,10 +1069,10 @@ async function certificatePages(pdf: PDFDocument, input: RenderInputV3, certUrl:
         footer(t, "Audit trail, continued.");
         yy = H - 128 - 40;
       }
-      const line = (EVENT_TEXT[type] ?? ((w: string) => `${type} ${w}`))(who ?? "the sender");
+      const line = printable((EVENT_TEXT[type] ?? ((w: string) => `${type} ${w}`))(who ?? "the sender"));
       t.drawCircle({ x: M + 4, y: yy + 3, size: 2.6, color: type === "completed" ? SUCCESS : ACCENT });
       t.drawText(fmtUtc(at), { x: M + 16, y: yy, size: 8, font: mono, color: MUTED });
-      t.drawText(line, { x: M + 210, y: yy, size: 9.5, font: sans, color: INK });
+      t.drawText(line, { x: M + 210, y: yy, size: 9.5, font: await sansFor(line), color: INK });
       yy -= 22;
     }
   }

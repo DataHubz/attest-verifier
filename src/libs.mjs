@@ -15,6 +15,9 @@ import { PDFArray, PDFDict, PDFDocument, PDFName, PDFRawStream, PDFRef, decodePD
 import instrumentSans400 from "./fonts/instrument-sans-400.ttf";
 import instrumentSans600 from "./fonts/instrument-sans-600.ttf";
 import jetbrainsMono400 from "./fonts/jetbrains-mono-400.ttf";
+// Renderer v3 also prints what people typed in Noto Sans when Helvetica and Instrument Sans have no glyph for it.
+import notoSans400 from "./fonts/noto-sans-400.ttf";
+import notoSans700 from "./fonts/noto-sans-700.ttf";
 
 // Issuer keys (Multikey) are compressed P-256 points, which some browsers' WebCrypto won't import, raw or wrapped in
 // SPKI (Firefox). The point is decompressed, and checked to be on the curve, before WebCrypto imports it.
@@ -88,7 +91,7 @@ window.AttestLibs = {
   verifyGroth16,
   renderers: {
     [RENDERER_V2]: (input) => renderV2({ ...input, fonts: { sans: instrumentSans400, bold: instrumentSans600, mono: jetbrainsMono400 } }),
-    [RENDERER_V3]: (input) => renderV3({ ...input, fonts: { sans: instrumentSans400, bold: instrumentSans600, mono: jetbrainsMono400 } }),
+    [RENDERER_V3]: (input) => renderV3({ ...input, fonts: { sans: instrumentSans400, bold: instrumentSans600, mono: jetbrainsMono400, noto: notoSans400, notoBold: notoSans700 } }),
   },
   circuits: {
     agreement_membership: agreementMembership,
