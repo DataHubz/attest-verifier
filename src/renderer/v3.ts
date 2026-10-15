@@ -265,107 +265,305 @@ function dropUnreachable(pdf: PDFDocument) {
   for (const [ref] of pdf.context.enumerateIndirectObjects()) if (!keep.has(ref)) pdf.context.delete(ref);
 }
 
-// ---- The document's content, kept to itself ------------------------------------------------------------
+// ---- The document as the signer saw it ------------------------------------------------------------------
+//
+// The signer saw each page drawn by pdf.js for print (the field placer and the signing page draw pages that way). A
+// copy shows exactly that, with Attest's layer on top, in every reader, or isn't made: a document v3 can't vouch for
+// is refused before anyone signs (documentProblemsV3), and renderV3 throws on it rather than make a copy that could
+// show something else.
+//
+// - Content is read as pdf.js reads it (its lexer, its operators, its inline images), from streams decoded with the
+//   filters and predictors pdf.js decodes; nothing is dropped or changed. A stream v3 can't decode completely, or whose
+//   reading other readers could disagree with, makes the document refused.
+// - Each page's content is drawn as one form XObject, which readers draw with its own graphics state. Every content
+//   stream a page may run (the page's form, form XObjects, Type 3 glyphs, soft masks, annotation appearances) is then
+//   closed off: preceded by as many saves as it could restore beyond its own (pdf.js keeps one stack of saved states
+//   for the whole page and lets a form restore states saved outside it), and followed by what ends every state ISO
+//   32000-1 lets persist past the end of a content stream that a graphics state restore doesn't end:
+//     - a text object (BT without ET, 9.4): ET, which also applies a pending text clip inside the stream;
+//     - a current path or a pending clip (8.5.2, 8.5.4: a path is painted, or a clip applied, by the next painting
+//       operator, which would be Attest's): n;
+//     - marked content (BMC or BDC without EMC, 14.6), optional content included: an EMC for each;
+//     - a compatibility section (BX without EX, 7.8.2): an EX for each.
+//   The graphics state itself (the transform, the clip, colours, line and text state, the soft mask and the other
+//   ExtGState parameters, 8.4) is restored when the form ends. A stream that ends inside an inline image, a string, a
+//   hex string, an array or a dictionary is refused: anything appended would be read as part of it.
+// - Annotations are drawn as pdf.js draws them for print: each one its print shows (flagged Print, not Hidden), in its
+//   order (widgets, then pop-ups, last), from its appearance stream (the one /AS names in a state dictionary), mapped
+//   from its BBox and Matrix to its Rect and clipped to it, with its optional content. They become part of the page,
+//   under Attest's layer, and every annotation is removed from the copy, with the form fields: no annotation can cover
+//   a stamp, and none the signer didn't see can appear. One whose appearance pdf.js would make up itself (no appearance
+//   stream, or form fields whose appearances the document asks readers to regenerate) is refused.
+// - Optional content whose visibility depends on printing or viewing (Usage with PrintState or ViewState) is refused:
+//   the signer saw it as printed, and a reader shows it as viewed.
 
-const WHITE = new Set([0, 9, 10, 12, 13, 32]);
-const DELIMS = new Set([40, 41, 60, 62, 91, 93, 123, 125, 47, 37]);
-const regular = (c: number) => !WHITE.has(c) && !DELIMS.has(c);
+/** pdf.js's operators and their operand counts (EvaluatorPreprocessor.opMap; negative: up to that many). */
+const OPERATORS: Record<string, number> = {
+  w: 1, J: 1, j: 1, M: 1, d: 2, ri: 1, i: 1, gs: 1, q: 0, Q: 0, cm: 6, m: 2, l: 2, c: 6, v: 4, y: 4, h: 0, re: 4, S: 0, s: 0, f: 0,
+  F: 0, "f*": 0, B: 0, "B*": 0, b: 0, "b*": 0, n: 0, W: 0, "W*": 0, BT: 0, ET: 0, Tc: 1, Tw: 1, Tz: 1, TL: 1, Tf: 2, Tr: 1, Ts: 1,
+  Td: 2, TD: 2, Tm: 6, "T*": 0, Tj: 1, TJ: 1, "'": 1, '"': 3, d0: 2, d1: 6, CS: 1, cs: 1, SC: -4, SCN: -33, sc: -4, scn: -33, G: 1,
+  g: 1, RG: 3, rg: 3, K: 4, k: 4, sh: 1, BI: 0, ID: 0, EI: 1, Do: 1, MP: 1, DP: 2, BMC: 1, BDC: 2, EMC: 0, BX: 0, EX: 0,
+};
+/** Every word pdf.js's lexer knows, which it splits a run of characters into ("fQ" is f, then Q). */
+const LEXER_WORDS = new Set([...Object.keys(OPERATORS), "BM", "BD", "true", "fa", "fal", "fals", "false", "nu", "nul", "null"]);
+const PATH_OPS = new Set(["m", "l", "c", "v", "y", "h", "re"]);
+const PAINT_OPS = new Set(["S", "s", "f", "F", "f*", "B", "B*", "b", "b*", "n"]);
 
-/**
- * The most graphics states a content stream could restore (Q) beyond the ones it saved itself (q), at any point, as any
- * reader may parse it. Readers that follow the PDF specification never let a form's content restore a state saved
- * outside the form; pdf.js keeps one stack for the whole page and does, so a document ending in "Q Q Q 1 0 0 1 0 -118
- * cm" would move everything drawn after it. Each content stream that could is preceded by this many saves of its own.
- *
- * An upper bound, read as pdf.js's lexer reads: comments, strings, hex strings and names are skipped; every Q in a run
- * of other characters counts as a restore (pdf.js splits "QQQ" and "fQ" into operators), and only a q standing alone
- * counts as a save. After an inline image, whose end readers find in different ways, every Q byte counts and no save
- * does.
- */
-export function unbalancedRestores(b: Uint8Array): number {
+const isWhite = (c: number) => c === 0 || c === 9 || c === 10 || c === 12 || c === 13 || c === 32;
+const isDelim = (c: number) => c === 40 || c === 41 || c === 60 || c === 62 || c === 91 || c === 93 || c === 123 || c === 125 || c === 47 || c === 37;
+const isSpecial = (c: number) => isWhite(c) || isDelim(c);
+
+type Tok =
+  | { k: "op"; v: string }
+  | { k: "num" | "str" | "hex" | "name" | "lit"; v: string }
+  | { k: "[" | "]" | "<<" | ">>" | "{" | "}" | ">" }
+  | { k: "eof" };
+type Lexed = { tok: Tok; end: number } | { error: string };
+
+/** One token at `i`, exactly as pdf.js's lexer reads it (Lexer.getObj), or why pdf.js would stop reading there. */
+function lexAt(b: Uint8Array, i: number): Lexed {
   const n = b.length;
-  let saved = 0;
-  let worst = 0;
-  const restore = () => {
-    saved--;
-    if (-saved > worst) worst = -saved;
-  };
-  let i = 0;
-  while (i < n) {
-    const c = b[i];
-    if (WHITE.has(c)) i++;
-    else if (c === 37) while (i < n && b[i] !== 10 && b[i] !== 13) i++;
-    else if (c === 40) {
-      // A string: nested parentheses, and a backslash escapes the next byte.
-      let depth = 1;
+  for (;;) {
+    if (i >= n) return { tok: { k: "eof" }, end: n };
+    if (b[i] === 37) {
+      while (i < n && b[i] !== 10 && b[i] !== 13) i++;
+      continue;
+    }
+    if (isWhite(b[i])) {
       i++;
-      while (i < n && depth > 0) {
-        const x = b[i++];
-        if (x === 92) i++;
-        else if (x === 40) depth++;
-        else if (x === 41) depth--;
+      continue;
+    }
+    break;
+  }
+  const c = b[i];
+  if ((c >= 48 && c <= 57) || c === 43 || c === 45 || c === 46) {
+    let j = i;
+    let ch = b[j];
+    if (ch === 45) {
+      ch = b[++j];
+      if (ch === 45) ch = b[++j];
+    } else if (ch === 43) ch = b[++j];
+    while (ch === 10 || ch === 13) ch = b[++j];
+    let dot = false;
+    if (ch === 46) {
+      dot = true;
+      ch = b[++j];
+    }
+    if (!(ch >= 48 && ch <= 57)) {
+      if (j >= n || isWhite(ch) || ch === 40 || ch === 60) return { tok: { k: "num", v: "0" }, end: j };
+      return { error: "a number pdf.js can't read" };
+    }
+    for (j++; j < n; j++) {
+      const x = b[j];
+      if (x >= 48 && x <= 57) continue;
+      if (x === 46) {
+        if (!dot) {
+          dot = true;
+          continue;
+        }
+        break;
       }
-    } else if (c === 60 && b[i + 1] === 60) i += 2;
-    else if (c === 60) {
-      while (i < n && b[i] !== 62) i++;
-      i++;
-    } else if (c === 47) {
-      i++;
-      while (i < n && regular(b[i])) i++;
-    } else if (DELIMS.has(c)) i++;
-    else {
-      let j = i;
-      let inline = false;
-      while (j < n && regular(b[j])) {
-        if (b[j] === 66 && b[j + 1] === 73) inline = true;
-        j++;
+      if (x === 45) continue;
+      break;
+    }
+    return { tok: { k: "num", v: "" }, end: j };
+  }
+  if (c === 40) {
+    let depth = 1;
+    let j = i + 1;
+    while (j < n) {
+      const x = b[j++];
+      if (x === 92) {
+        if (j < n) j++;
+      } else if (x === 40) depth++;
+      else if (x === 41 && --depth === 0) return { tok: { k: "str", v: "" }, end: j };
+    }
+    return { error: "a string that isn't closed" };
+  }
+  if (c === 47) {
+    let j = i + 1;
+    while (j < n && !isSpecial(b[j])) j++;
+    return { tok: { k: "name", v: String.fromCharCode(...b.subarray(i + 1, j)) }, end: j };
+  }
+  if (c === 91) return { tok: { k: "[" }, end: i + 1 };
+  if (c === 93) return { tok: { k: "]" }, end: i + 1 };
+  if (c === 123) return { tok: { k: "{" }, end: i + 1 };
+  if (c === 125) return { tok: { k: "}" }, end: i + 1 };
+  if (c === 60) {
+    if (b[i + 1] === 60) return { tok: { k: "<<" }, end: i + 2 };
+    let j = i + 1;
+    while (j < n && b[j] !== 62) j++;
+    if (j >= n) return { error: "a hex string that isn't closed" };
+    return { tok: { k: "hex", v: "" }, end: j + 1 };
+  }
+  if (c === 62) return b[i + 1] === 62 ? { tok: { k: ">>" }, end: i + 2 } : { tok: { k: ">" }, end: i + 1 };
+  if (c === 41) return { error: "a stray parenthesis, where pdf.js stops reading" };
+  // A command: pdf.js reads characters while they make one of its words, or until it has one and the next would end it.
+  if ((c < 0x20 || c > 0x7f) && i + 1 < n && b[i + 1] >= 0x20 && b[i + 1] <= 0x7f) return { tok: { k: "op", v: String.fromCharCode(c) }, end: i + 1 };
+  let str = String.fromCharCode(c);
+  let known = LEXER_WORDS.has(str);
+  let j = i + 1;
+  for (; j < n && !isSpecial(b[j]); j++) {
+    const next = str + String.fromCharCode(b[j]);
+    if (known && !LEXER_WORDS.has(next)) break;
+    if (str.length === 128) return { error: "a command pdf.js finds too long" };
+    str = next;
+    known = LEXER_WORDS.has(str);
+  }
+  if (str === "true" || str === "false" || str === "null") return { tok: { k: "lit", v: str }, end: j };
+  return { tok: { k: "op", v: str }, end: j };
+}
+
+/** What a content stream leaves open at its end, and the most saved states it could restore beyond its own. */
+export interface ContentState {
+  restores: number;
+  text: boolean;
+  path: boolean;
+  marked: number;
+  compat: number;
+  /** Why v3 can't vouch for this content (pdf.js and other readers could read it differently), or null. */
+  problem: string | null;
+}
+
+const E = 0x45, I = 0x49;
+/**
+ * Where an inline image's data ends (the "EI" after it), found as pdf.js finds it, and only when every reader finds the
+ * same end: no "EI" inside the data, and, after the data, "EI" and then what pdf.js's own check accepts.
+ */
+function inlineImageEnd(b: Uint8Array, dataStart: number, filter: string | null): number | string {
+  const n = b.length;
+  // pdf.js finds an image's end by its EOD marker for ASCII85 and ASCIIHex data, and by "EI" otherwise; it decodes
+  // no other image filter here.
+  if (filter && !["A85", "ASCII85Decode", "AHx", "ASCIIHexDecode", "Fl", "FlateDecode", "LZW", "LZWDecode", "RL", "RunLengthDecode"].includes(filter)) return `an inline image encoded with ${filter}`;
+  let marker = -1;
+  if (filter === "A85" || filter === "ASCII85Decode") {
+    for (let k = dataStart; k + 1 < n; k++) if (b[k] === 0x7e && b[k + 1] === 0x3e) { marker = k + 2; break; }
+  } else if (filter === "AHx" || filter === "ASCIIHexDecode") {
+    for (let k = dataStart; k < n; k++) if (b[k] === 0x3e) { marker = k + 1; break; }
+  }
+  // pdf.js's default search: E, then I, then a space, line feed or carriage return.
+  let state = 0;
+  let at = -1;
+  for (let k = dataStart; k < n; k++) {
+    const ch = b[k];
+    if (state === 0) state = ch === E ? 1 : 0;
+    else if (state === 1) state = ch === I ? 2 : 0;
+    else if (ch === 0x20 || ch === 0x0a || ch === 0x0d) {
+      at = k - 2;
+      break;
+    } else state = 0;
+  }
+  if (at < 0) return "an inline image without its end";
+  for (let k = dataStart; k < at; k++) if (b[k] === E && b[k + 1] === I) return "an inline image whose data contains EI";
+  if (marker >= 0) {
+    for (let k = marker; k < at; k++) if (!isWhite(b[k])) return "an inline image with data after its end marker";
+  } else if (filter === "A85" || filter === "ASCII85Decode" || filter === "AHx" || filter === "ASCIIHexDecode") return "an inline image without its end marker";
+  // pdf.js accepts this EI only if the next 15 bytes are text and a command with its operands follows.
+  const after = b.subarray(at + 3, at + 3 + 15);
+  for (let k = 0; k < after.length; k++) {
+    const ch = after[k];
+    if (ch === 0 && after[k + 1] !== 0) continue;
+    if (ch !== 0x0a && ch !== 0x0d && (ch < 0x20 || ch > 0x7f)) return "an inline image whose end pdf.js reads differently";
+  }
+  if (after.length) {
+    const window = b.subarray(at + 3, at + 3 + 75);
+    let p = 0;
+    let operands = 0;
+    for (;;) {
+      const r = lexAt(window, p);
+      if ("error" in r || r.tok.k === "eof") return "an inline image whose end pdf.js reads differently";
+      p = r.end;
+      if (r.tok.k === "op") {
+        const count = OPERATORS[r.tok.v];
+        if (count === undefined) return "an inline image whose end pdf.js reads differently";
+        if (count < 0 ? operands <= -count : operands === count) break;
+        operands = 0;
+        continue;
       }
-      if (j - i === 1 && c === 113) saved++;
-      else for (let k = i; k < j; k++) if (b[k] === 81) restore();
-      if (inline) {
-        for (let k = j; k < n; k++) if (b[k] === 81) restore();
-        return worst;
-      }
-      i = j;
+      operands++;
     }
   }
-  return worst;
+  return at;
 }
-
-/** Filters this renderer reads content through (pdf-lib's); content behind any other filter isn't drawn. */
-const READABLE_FILTERS = new Set(["FlateDecode", "LZWDecode", "ASCII85Decode", "ASCIIHexDecode", "RunLengthDecode"]);
 
 /**
- * A content stream's operators, as this renderer reads them: all of them, or as many as decode before an error (as
- * pdf.js draws those), or none behind a filter or predictor it doesn't read.
+ * Reads a content stream as pdf.js does: what it leaves open at its end, the most saved states it could restore beyond
+ * its own (every Q pdf.js reads, glued or not, counts), or why v3 can't vouch for it.
  */
-function contentOf(pdf: PDFDocument, v: unknown): { data: Uint8Array; whole: boolean } {
-  const s = v instanceof PDFRef ? pdf.context.lookup(v) : v;
-  const none = { data: new Uint8Array(), whole: false };
-  if (!(s instanceof PDFRawStream)) return none;
-  const lookup = (x: unknown) => (x instanceof PDFRef ? pdf.context.lookup(x) : x);
-  const filter = lookup(s.dict.get(PDFName.of("Filter")));
-  const filters = filter instanceof PDFArray ? filter.asArray().map(lookup) : filter === undefined ? [] : [filter];
-  if (!filters.every((f) => f instanceof PDFName && READABLE_FILTERS.has(f.decodeText()))) return none;
-  const params = lookup(s.dict.get(PDFName.of("DecodeParms")));
-  const predicted = (p: unknown) => {
-    const d = lookup(p);
-    const pr = d instanceof PDFDict ? lookup(d.get(PDFName.of("Predictor"))) : undefined;
-    return pr instanceof PDFNumber && pr.asNumber() > 1;
-  };
-  if (params instanceof PDFArray ? params.asArray().some(predicted) : predicted(params)) return none;
-  let stream: { decode: () => Uint8Array; buffer?: Uint8Array; bufferLength?: number };
-  try {
-    stream = decodePDFRawStream(s) as unknown as typeof stream;
-  } catch {
-    return none;
+export function readContent(b: Uint8Array): ContentState {
+  const s: ContentState = { restores: 0, text: false, path: false, marked: 0, compat: 0, problem: null };
+  let saved = 0;
+  let nest = 0;
+  let i = 0;
+  const fail = (why: string) => ((s.problem = why), s);
+  for (;;) {
+    const r = lexAt(b, i);
+    if ("error" in r) return fail(r.error);
+    i = r.end;
+    const t = r.tok;
+    if (t.k === "eof") break;
+    if (t.k === "[" || t.k === "<<") nest++;
+    else if (t.k === "]" || t.k === ">>") nest = Math.max(0, nest - 1);
+    if (t.k !== "op") continue;
+    const op = t.v;
+    if (nest > 0) {
+      if (op === "BI") return fail("an inline image inside an array or a dictionary");
+      continue;
+    }
+    if (op === "q") saved++;
+    else if (op === "Q") {
+      saved--;
+      if (-saved > s.restores) s.restores = -saved;
+    } else if (op === "BT") s.text = true;
+    else if (op === "ET") s.text = false;
+    else if (op === "BMC" || op === "BDC") s.marked++;
+    else if (op === "EMC") s.marked = Math.max(0, s.marked - 1);
+    else if (op === "BX") s.compat++;
+    else if (op === "EX") s.compat = Math.max(0, s.compat - 1);
+    else if (PATH_OPS.has(op) || op === "W" || op === "W*") s.path = true;
+    else if (PAINT_OPS.has(op)) s.path = false;
+    else if (op === "BI") {
+      // The image's dictionary, up to ID: names and their values (pdf.js refuses any other key).
+      let filter: string | null = null;
+      for (;;) {
+        const k = lexAt(b, i);
+        if ("error" in k) return fail(k.error);
+        i = k.end;
+        if (k.tok.k === "eof") return fail("an inline image without its data");
+        if (k.tok.k === "op" && k.tok.v === "ID") break;
+        if (k.tok.k !== "name") return fail("an inline image whose dictionary pdf.js can't read");
+        const key = k.tok.v;
+        const v = lexAt(b, i);
+        if ("error" in v) return fail(v.error);
+        i = v.end;
+        if (v.tok.k === "eof" || (v.tok.k === "op" && v.tok.v === "ID")) return fail("an inline image whose dictionary pdf.js can't read");
+        if (v.tok.k === "[" || v.tok.k === "<<") {
+          let depth = 1;
+          let first = true;
+          while (depth > 0) {
+            const y = lexAt(b, i);
+            if ("error" in y) return fail(y.error);
+            i = y.end;
+            if (y.tok.k === "eof") return fail("an inline image whose dictionary pdf.js can't read");
+            if (y.tok.k === "[" || y.tok.k === "<<") depth++;
+            else if (y.tok.k === "]" || y.tok.k === ">>") depth--;
+            else if (first && depth === 1 && y.tok.k === "name" && (key === "F" || key === "Filter")) filter = y.tok.v;
+            first = false;
+          }
+        } else if ((key === "F" || key === "Filter") && v.tok.k === "name") filter = v.tok.v;
+      }
+      // The data starts after the character that ends "ID".
+      const end = inlineImageEnd(b, i + 1, filter);
+      if (typeof end === "string") return fail(end);
+      i = end + 2;
+    }
   }
-  try {
-    return { data: stream.decode(), whole: true };
-  } catch {
-    return { data: stream.buffer ? stream.buffer.slice(0, stream.bufferLength ?? 0) : new Uint8Array(), whole: false };
-  }
+  if (nest > 0) return fail("an array or a dictionary that isn't closed");
+  return s;
 }
+
+/** What ends every state a content stream left open (ContentState), appended after it. */
+const closing = (s: ContentState) => `${s.text ? "ET\n" : ""}${s.path ? "n\n" : ""}${"EMC\n".repeat(s.marked)}${"EX\n".repeat(s.compat)}`;
 
 const ascii = (s: string) => Uint8Array.from(s, (ch) => ch.charCodeAt(0));
 function joined(parts: Uint8Array[]): Uint8Array {
@@ -377,21 +575,117 @@ function joined(parts: Uint8Array[]): Uint8Array {
   }
   return out;
 }
-/** Content preceded by as many saves as it could restore beyond its own. */
-const guarded = (data: Uint8Array) => {
-  const d = unbalancedRestores(data);
-  return d ? joined([ascii(`${"q ".repeat(d)}\n`), data]) : data;
+/** Content closed off: preceded by the saves it could restore beyond its own, followed by what ends what it left open. */
+const closedOff = (data: Uint8Array, s: ContentState) =>
+  joined([ascii(s.restores ? `${"q ".repeat(s.restores)}\n` : ""), data, ascii(`\n${closing(s)}`)]);
+const needsClosing = (s: ContentState) => s.restores > 0 || s.text || s.path || s.marked > 0 || s.compat > 0;
+
+/** The filters pdf.js decodes content with, by every name it accepts. */
+const FILTERS: Record<string, string> = {
+  FlateDecode: "FlateDecode", Fl: "FlateDecode", LZWDecode: "LZWDecode", LZW: "LZWDecode", ASCII85Decode: "ASCII85Decode",
+  A85: "ASCII85Decode", ASCIIHexDecode: "ASCIIHexDecode", AHx: "ASCIIHexDecode", RunLengthDecode: "RunLengthDecode", RL: "RunLengthDecode",
 };
 
+/** A predictor's rows undone, as pdf.js's PredictorStream does: PNG (10 to 15) or TIFF (2), whole rows only. */
+function unpredict(data: Uint8Array, p: { predictor: number; colors: number; bits: number; columns: number }): Uint8Array | string {
+  const { predictor, colors, bits, columns } = p;
+  if (predictor === 2) {
+    if (bits !== 8) return "a TIFF predictor on other than 8-bit samples";
+    const row = columns * colors;
+    if (row <= 0 || data.length % row) return "a predicted stream with a partial row";
+    const out = new Uint8Array(data.length);
+    for (let r = 0; r < data.length; r += row) {
+      for (let k = 0; k < row; k++) out[r + k] = (data[r + k] + (k >= colors ? out[r + k - colors] : 0)) & 0xff;
+    }
+    return out;
+  }
+  if (predictor < 10 || predictor > 15) return `predictor ${predictor}`;
+  const pix = (colors * bits + 7) >> 3;
+  const row = (columns * colors * bits + 7) >> 3;
+  if (row <= 0 || data.length % (row + 1)) return "a predicted stream with a partial row";
+  const rows = data.length / (row + 1);
+  const out = new Uint8Array(rows * row);
+  let prev = new Uint8Array(row);
+  for (let r = 0; r < rows; r++) {
+    const type = data[r * (row + 1)];
+    const raw = data.subarray(r * (row + 1) + 1, (r + 1) * (row + 1));
+    const cur = out.subarray(r * row, (r + 1) * row);
+    for (let k = 0; k < row; k++) {
+      const left = k >= pix ? cur[k - pix] : 0;
+      const up = prev[k];
+      const upLeft = k >= pix ? prev[k - pix] : 0;
+      let v: number;
+      if (type === 0) v = raw[k];
+      else if (type === 1) v = raw[k] + left;
+      else if (type === 2) v = raw[k] + up;
+      else if (type === 3) v = raw[k] + ((left + up) >> 1);
+      else if (type === 4) {
+        const pa = Math.abs(up - upLeft), pb = Math.abs(left - upLeft), pc = Math.abs(left + up - 2 * upLeft);
+        v = raw[k] + (pa <= pb && pa <= pc ? left : pb <= pc ? up : upLeft);
+      } else return `PNG predictor row type ${type}`;
+      cur[k] = v & 0xff;
+    }
+    prev = cur;
+  }
+  return out;
+}
+
 /**
- * Every other content stream a page's content may run (forms, Type 3 glyphs, soft masks), guarded the same way, so
- * none can restore a state saved outside it in any reader. Content this renderer can't read entirely is replaced by what
- * it read, so what every reader draws is exactly what was checked.
+ * A content stream decoded completely, with every filter and predictor pdf.js decodes content with, or why not: a
+ * stream v3 can't decode completely makes the document refused (it never drops or changes content).
  */
-function guardContentStreams(pdf: PDFDocument) {
+function contentOf(pdf: PDFDocument, v: unknown): Uint8Array | string {
+  const ctx = pdf.context;
+  const lookup = (x: unknown) => (x instanceof PDFRef ? ctx.lookup(x) : x);
+  const s = lookup(v);
+  if (!(s instanceof PDFRawStream)) return "content that isn't a stream";
+  const filter = lookup(s.dict.get(PDFName.of("Filter")));
+  const names = (filter instanceof PDFArray ? filter.asArray().map(lookup) : filter === undefined ? [] : [filter]).map((f) => (f instanceof PDFName ? f.decodeText() : null));
+  const parmsRaw = lookup(s.dict.get(PDFName.of("DecodeParms")));
+  const parms = (parmsRaw instanceof PDFArray ? parmsRaw.asArray() : [parmsRaw]).map(lookup);
+  const full: string[] = [];
+  let predict: { predictor: number; colors: number; bits: number; columns: number } | null = null;
+  const plain: (PDFDict | null)[] = [];
+  for (const [k, name] of names.entries()) {
+    const f = name ? FILTERS[name] : undefined;
+    if (!f) return `content encoded with ${name ?? "an unnamed filter"}`;
+    full.push(f);
+    const d = parms[filter instanceof PDFArray ? k : 0];
+    const num = (key: string, dflt: number) => {
+      const x = d instanceof PDFDict ? lookup(d.get(PDFName.of(key))) : undefined;
+      return x instanceof PDFNumber ? x.asNumber() : dflt;
+    };
+    const predictor = num("Predictor", 1);
+    if (predictor > 1) {
+      if ((f !== "FlateDecode" && f !== "LZWDecode") || k !== names.length - 1) return "a predictor pdf.js wouldn't apply";
+      predict = { predictor, colors: num("Colors", 1), bits: num("BitsPerComponent", 8), columns: num("Columns", 1) };
+    }
+    plain.push(f === "LZWDecode" && d instanceof PDFDict ? ctx.obj({ EarlyChange: num("EarlyChange", 1) }) : null);
+  }
+  let data: Uint8Array;
+  try {
+    const dict = ctx.obj({ Filter: full, DecodeParms: plain.map((p) => p ?? null) });
+    data = full.length ? (decodePDFRawStream(PDFRawStream.of(dict, s.contents)) as unknown as { decode: () => Uint8Array }).decode() : s.contents;
+  } catch {
+    return "content that doesn't decode";
+  }
+  if (predict) {
+    const out = unpredict(data, predict);
+    if (typeof out === "string") return out;
+    data = out;
+  }
+  return data;
+}
+
+/**
+ * Every other content stream a page may run (forms, Type 3 glyphs, soft masks), read as pdf.js reads it and closed off
+ * where it needs to be (rewritten with exactly the content it had). Returns what v3 can't vouch for.
+ */
+function closeOffContentStreams(pdf: PDFDocument): string[] {
   const ctx = pdf.context;
   const lookup = (x: unknown) => (x instanceof PDFRef ? ctx.lookup(x) : x);
   const run = new Set<PDFRef>();
+  const problems: string[] = [];
   for (const [ref, o] of ctx.enumerateIndirectObjects()) {
     const dict = o instanceof PDFDict ? o : o instanceof PDFRawStream ? o.dict : null;
     if (!dict) continue;
@@ -403,18 +697,173 @@ function guardContentStreams(pdf: PDFDocument) {
     const mask = lookup(dict.get(PDFName.of("SMask")));
     const group = mask instanceof PDFDict ? mask.get(PDFName.of("G")) : undefined;
     if (group instanceof PDFRef) run.add(group);
+    // Optional content shown differently printed and viewed: the signer saw it printed, a reader shows it viewed.
+    const usage = lookup(dict.get(PDFName.of("Usage")));
+    if (nameIn(pdf, dict.get(PDFName.of("Type"))) === "OCG" && usage instanceof PDFDict) {
+      for (const [k, state] of [["Print", "PrintState"], ["View", "ViewState"]]) {
+        const u = lookup(usage.get(PDFName.of(k)));
+        if (u instanceof PDFDict && u.has(PDFName.of(state))) problems.push("optional content shown differently printed and on screen");
+      }
+    }
   }
   const skip = new Set(["Filter", "DecodeParms", "Length", "DL"]);
   for (const ref of run) {
     const s = ctx.lookup(ref);
     if (!(s instanceof PDFRawStream)) continue;
-    const { data, whole } = contentOf(pdf, s);
-    if (whole && unbalancedRestores(data) === 0) continue;
-    const fresh = ctx.flateStream(guarded(data));
+    const data = contentOf(pdf, s);
+    if (typeof data === "string") {
+      problems.push(data);
+      continue;
+    }
+    const state = readContent(data);
+    if (state.problem) {
+      problems.push(state.problem);
+      continue;
+    }
+    if (!needsClosing(state)) continue;
+    const fresh = ctx.flateStream(closedOff(data, state));
     for (const [k, v] of s.dict.entries()) if (!skip.has(k.decodeText())) fresh.dict.set(k, v);
     ctx.assign(ref, fresh);
   }
+  return problems;
 }
+
+/** The page's own content, as pdf.js reads a page: its streams decoded and joined, or why not. */
+function pageContent(pdf: PDFDocument, page: PDFPage): Uint8Array | string {
+  const raw = page.node.get(PDFName.of("Contents"));
+  const contents = raw instanceof PDFRef ? pdf.context.lookup(raw) : raw;
+  if (contents === undefined) return new Uint8Array();
+  const parts = contents instanceof PDFArray ? contents.asArray() : [contents];
+  const out: Uint8Array[] = [];
+  for (const p of parts) {
+    const d = contentOf(pdf, p);
+    if (typeof d === "string") return d;
+    out.push(d);
+  }
+  return joined(out);
+}
+
+/** How pdf.js maps an appearance's BBox (through its Matrix) onto the annotation's Rect: getTransformMatrix. */
+function appearanceTransform(rect: Rect4, bbox: number[], m: number[]): [number, number, number, number, number, number] {
+  const [r0, r1, r2, r3] = bbox;
+  let a0 = m[0] * r0 + m[4], a2 = a0, a1 = m[0] * r2 + m[4], a3 = a1;
+  let b0 = m[3] * r1 + m[5], b2 = b0, b1 = m[3] * r3 + m[5], b3 = b1;
+  if (m[1] !== 0 || m[2] !== 0) {
+    a0 += m[2] * r1; a3 += m[2] * r1; a1 += m[2] * r3; a2 += m[2] * r3;
+    b0 += m[1] * r0; b3 += m[1] * r0; b1 += m[1] * r2; b2 += m[1] * r2;
+  }
+  // pdf.js keeps the box in 32-bit floats.
+  const minX = Math.fround(Math.min(a0, a1, a2, a3)), maxX = Math.fround(Math.max(a0, a1, a2, a3));
+  const minY = Math.fround(Math.min(b0, b1, b2, b3)), maxY = Math.fround(Math.max(b0, b1, b2, b3));
+  if (minX === maxX || minY === maxY) return [1, 0, 0, 1, rect[0], rect[1]];
+  const xr = (rect[2] - rect[0]) / (maxX - minX);
+  const yr = (rect[3] - rect[1]) / (maxY - minY);
+  return [xr, 0, 0, yr, rect[0] - minX * xr, rect[1] - minY * yr];
+}
+
+const QUAD_TYPES = new Set(["Highlight", "Underline", "Squiggly", "StrikeOut"]);
+const KNOWN_ANNOTATIONS = new Set(["Link", "Text", "Widget", "Popup", "FreeText", "Line", "Square", "Circle", "PolyLine", "Polygon", "Caret", "Ink", "Highlight", "Underline", "Squiggly", "StrikeOut", "Stamp", "FileAttachment"]);
+
+/** A number array of this length, read through references, or null (pdf.js's isNumberArray). */
+function numbers(pdf: PDFDocument, v: unknown, len: number | null): number[] | null {
+  const x = v instanceof PDFRef ? pdf.context.lookup(v) : v;
+  if (!(x instanceof PDFArray) || (len !== null && x.size() !== len)) return null;
+  const out = x.asArray().map((y) => (y instanceof PDFRef ? pdf.context.lookup(y) : y));
+  return out.every((y) => y instanceof PDFNumber) ? out.map((y) => (y as PDFNumber).asNumber()) : null;
+}
+
+/**
+ * The page's annotations as pdf.js draws them for print, as page content to draw after the page's own (each one a form
+ * XObject added to `res`), or what v3 can't vouch for. The annotations themselves are then removed.
+ */
+function flattenAnnotations(pdf: PDFDocument, page: PDFPage, res: PDFDict, problems: string[]): string {
+  const ctx = pdf.context;
+  const lookup = (x: unknown) => (x instanceof PDFRef ? ctx.lookup(x) : x);
+  const node = page.node;
+  const annots = lookup(inherited(pdf, node, "Annots"));
+  node.delete(PDFName.of("Annots"));
+  if (!(annots instanceof PDFArray)) return "";
+  const needAppearances = (() => {
+    const form = lookup(pdf.catalog.get(PDFName.of("AcroForm")));
+    const na = form instanceof PDFDict ? lookup(form.get(PDFName.of("NeedAppearances"))) : undefined;
+    return Boolean(na && (na as { asBoolean?: () => boolean }).asBoolean?.());
+  })();
+  const all = annots.asArray().map(lookup).filter((a): a is PDFDict => a instanceof PDFDict);
+  const kind = (a: PDFDict) => nameIn(pdf, a.get(PDFName.of("Subtype")));
+  const ordered = [...all.filter((a) => kind(a) !== "Widget" && kind(a) !== "Popup"), ...all.filter((a) => kind(a) === "Widget"), ...all.filter((a) => kind(a) === "Popup")];
+  let out = "";
+  const XObject = ctx.obj({});
+  const Properties = ctx.obj({});
+  for (const a of ordered) {
+    const subtype = kind(a);
+    const f = lookup(a.get(PDFName.of("F")));
+    let flags = f instanceof PDFNumber && Number.isInteger(f.asNumber()) && f.asNumber() > 0 ? f.asNumber() : 0;
+    if (flags & 1 && subtype !== null && KNOWN_ANNOTATIONS.has(subtype)) flags ^= 1;
+    if (subtype && QUAD_TYPES.has(subtype)) {
+      const q = numbers(pdf, a.get(PDFName.of("QuadPoints")), null);
+      if (!q || q.length === 0 || q.length % 8) continue;
+    }
+    // pdf.js prints an annotation flagged Print, and not Hidden or Invisible.
+    if (flags === 0 || !(flags & 4) || flags & 2 || flags & 1) continue;
+    const r = numbers(pdf, a.get(PDFName.of("Rect")), 4) ?? [0, 0, 0, 0];
+    const rect: Rect4 = [Math.min(r[0], r[2]), Math.min(r[1], r[3]), Math.max(r[0], r[2]), Math.max(r[1], r[3])];
+    // Its appearance: /AP /N, or the state /AS names in it.
+    const ap = lookup(a.get(PDFName.of("AP")));
+    let appearance: unknown = ap instanceof PDFDict ? lookup(ap.get(PDFName.of("N"))) : undefined;
+    if (appearance instanceof PDFDict) {
+      const as = lookup(a.get(PDFName.of("AS")));
+      appearance = as instanceof PDFName && appearance.has(as) ? lookup(appearance.get(as)) : undefined;
+    }
+    const field = subtype === "Widget" ? nameIn(pdf, inherited(pdf, a, "FT")) : null;
+    if (subtype === "Widget" && needAppearances && (field === "Tx" || field === "Ch")) {
+      problems.push("form fields whose appearances readers are asked to make up");
+      continue;
+    }
+    // A pop-up takes its parent's flags in pdf.js, so whether one with its own appearance prints isn't its own to say.
+    if (subtype === "Popup" && appearance instanceof PDFRawStream) {
+      problems.push("a pop-up note with its own appearance");
+      continue;
+    }
+    if (!(appearance instanceof PDFRawStream)) {
+      // pdf.js draws nothing for a link or a pop-up without an appearance; for anything else it may make one up.
+      if (subtype !== "Link" && subtype !== "Popup") problems.push(`a printed ${subtype ?? "annotation"} without an appearance`);
+      continue;
+    }
+    const data = contentOf(pdf, appearance);
+    if (typeof data === "string") {
+      problems.push(data);
+      continue;
+    }
+    const state = readContent(data);
+    if (state.problem) {
+      problems.push(state.problem);
+      continue;
+    }
+    const w = rect[2] - rect[0], h = rect[3] - rect[1];
+    const bbox = numbers(pdf, appearance.dict.get(PDFName.of("BBox")), 4) ?? [0, 0, w, h];
+    const matrix = numbers(pdf, appearance.dict.get(PDFName.of("Matrix")), 6) ?? [1, 0, 0, 1, 0, 0];
+    const t = appearanceTransform(rect, bbox, matrix);
+    const resources = lookup(appearance.dict.get(PDFName.of("Resources")));
+    const k = XObject.keys().length;
+    const form = ctx.flateStream(closedOff(data, state), {
+      Type: "XObject",
+      Subtype: "Form",
+      BBox: [-1e9, -1e9, 1e9, 1e9],
+      Resources: resources instanceof PDFDict ? resources : ctx.obj({}),
+    });
+    XObject.set(PDFName.of(`AttestAnnot${k}`), ctx.register(form));
+    const oc = a.get(PDFName.of("OC"));
+    if (oc !== undefined) Properties.set(PDFName.of(`AttestOC${k}`), oc);
+    const nums = (xs: number[]) => xs.map((x) => numberText(x)).join(" ");
+    out += `${oc !== undefined ? `/OC /AttestOC${k} BDC\n` : ""}q ${nums([rect[0], rect[1], w, h])} re W n ${nums(t)} cm ${nums(matrix)} cm /AttestAnnot${k} Do Q\n${oc !== undefined ? "EMC\n" : ""}`;
+  }
+  for (const [key, v] of XObject.entries()) (res.get(PDFName.of("XObject")) as PDFDict).set(key, v);
+  if (Properties.keys().length) res.set(PDFName.of("Properties"), Properties);
+  return out;
+}
+
+/** A number as content streams write it: pdf-lib's own form (no exponent), the same in every engine. */
+const numberText = (x: number) => PDFNumber.of(x).toString();
 
 /** A value a page inherits (it or its nearest ancestor in the page tree), as readers look it up. */
 function inherited(pdf: PDFDocument, page: PDFDict, key: string): unknown {
@@ -473,30 +922,52 @@ export function shownPage(pdf: PDFDocument, page: PDFPage): { width: number; hei
 }
 
 /**
- * The page's own content drawn as one form XObject, which readers draw with its own graphics state: whatever the
- * content leaves changed (an extra restore, a moved coordinate system, invisible or stretched text, a clip, an open
- * string or inline image) ends with the form, and what Attest draws next starts from the page's own state. The content
- * is read as pdf.js reads a page (its streams joined, any that doesn't decode left out) and guarded against pdf.js's
- * shared stack; its resources stay its own, so it can't name anything Attest adds.
+ * The page's own content drawn as one form XObject, which readers draw with its own graphics state, closed off (read
+ * as pdf.js reads a page: its streams decoded and joined), then the annotations pdf.js prints, drawn as page content:
+ * whatever the content leaves changed or open ends with it, and what Attest draws next starts from the page's own
+ * state, on top of everything the signer saw. The content's resources stay its own, so it can't name anything Attest
+ * adds. What v3 can't vouch for is added to `problems`.
  */
-function isolatePage(pdf: PDFDocument, page: PDFPage, media: Rect4) {
+function isolatePage(pdf: PDFDocument, page: PDFPage, media: Rect4, problems: string[]) {
   const ctx = pdf.context;
   const node = page.node;
-  const raw = node.get(PDFName.of("Contents"));
-  const contents = raw instanceof PDFRef ? ctx.lookup(raw) : raw;
-  const data =
-    contents instanceof PDFArray
-      ? joined(contents.asArray().map((s) => contentOf(pdf, s)).filter((c) => c.whole).map((c) => c.data))
-      : contentOf(pdf, contents).data;
-  const res = inherited(pdf, node, "Resources");
-  const form = ctx.flateStream(guarded(data), {
+  const data = pageContent(pdf, page);
+  let body: Uint8Array = new Uint8Array();
+  if (typeof data === "string") problems.push(data);
+  else {
+    const state = readContent(data);
+    if (state.problem) problems.push(state.problem);
+    else body = closedOff(data, state);
+  }
+  const resources = inherited(pdf, node, "Resources");
+  const form = ctx.flateStream(body, {
     Type: "XObject",
     Subtype: "Form",
     BBox: media,
-    Resources: res instanceof PDFDict ? res : ctx.obj({}),
+    Resources: resources instanceof PDFDict ? resources : ctx.obj({}),
   });
-  node.set(PDFName.of("Resources"), ctx.obj({ XObject: { AttestPage: ctx.register(form) } }));
-  node.set(PDFName.of("Contents"), ctx.register(ctx.flateStream("q /AttestPage Do Q\n")));
+  const res = ctx.obj({ XObject: { AttestPage: ctx.register(form) } });
+  const annotations = flattenAnnotations(pdf, page, res, problems);
+  node.set(PDFName.of("Resources"), res);
+  node.set(PDFName.of("Contents"), ctx.register(ctx.flateStream(`q /AttestPage Do Q\n${annotations}`)));
+}
+
+/**
+ * Why v3 can't make a copy of this document that shows exactly what its signer sees, in every reader (empty when it
+ * can). The composer refuses such a document before it's sent, the signing page before anyone signs, and renderV3
+ * throws on it.
+ */
+export async function documentProblemsV3(original: Uint8Array): Promise<string[]> {
+  let pdf: PDFDocument;
+  try {
+    pdf = await PDFDocument.load(original, { updateMetadata: false });
+  } catch {
+    return ["a PDF that can't be read (an encrypted or damaged file)"];
+  }
+  stripActiveContent(pdf);
+  const problems = closeOffContentStreams(pdf);
+  for (const p of pdf.getPages()) isolatePage(pdf, p, shownPage(pdf, p).media, problems);
+  return [...new Set(problems)];
 }
 
 // ---- Drawing -----------------------------------------------------------------------------------------
@@ -875,7 +1346,7 @@ export async function renderV3(input: RenderInputV3): Promise<Uint8Array> {
   const pdf = await PDFDocument.load(input.original, { updateMetadata: false });
   deterministic(pdf);
   stripActiveContent(pdf);
-  guardContentStreams(pdf);
+  const problems = closeOffContentStreams(pdf);
   const { agreement: a, details: d } = input;
   const code = d.verifyCode;
   const certUrl = code ? `${input.appUrl}/v/${fmtCode(code)}` : `${input.appUrl}/a/${a.id}`;
@@ -888,10 +1359,11 @@ export async function renderV3(input: RenderInputV3): Promise<Uint8Array> {
   // its bottom-left.
   const pages = pdf.getPages();
   const shown = pages.map((p) => shownPage(pdf, p));
-  for (const [i, p] of pages.entries()) {
-    isolatePage(pdf, p, shown[i].media);
-    p.pushOperators(pushGraphicsState(), concatTransformationMatrix(...shown[i].m));
-  }
+  for (const [i, p] of pages.entries()) isolatePage(pdf, p, shown[i].media, problems);
+  // Form fields are drawn as the signer saw them (their widgets flattened above): the copy keeps no fields of its own.
+  pdf.catalog.delete(PDFName.of("AcroForm"));
+  if (problems.length) throw new Error(`Renderer v3 can't make a copy of this document that shows exactly what its signer saw: ${[...new Set(problems)].join("; ")}`);
+  for (const [i, p] of pages.entries()) p.pushOperators(pushGraphicsState(), concatTransformationMatrix(...shown[i].m));
   // Each entry where its signer made it (positions are fractions of the shown page from its top-left), each signature
   // in its stamp.
   const adopted = new Map<string, string>();
