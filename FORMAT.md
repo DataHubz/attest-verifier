@@ -212,6 +212,7 @@ Third, what people typed (entries, a signature set in type, the title, signers' 
 
 - On one line: each run of line breaks (`\n`, `\r`, U+2028, U+2029, U+0085, `\v`, `\f`) is one space.
 - Composed (Unicode NFC). A character renderer v3 doesn't print (`src/renderer/charset-v3.ts`: Latin with its extensions and IPA, Greek, Cyrillic with its supplement, Vietnamese, combining marks, punctuation and spaces, superscripts and subscripts, currency, letterlike symbols, number forms, the Latin ligatures) is drawn as its decomposition when that prints, or as U+FFFD.
+- A title with a character renderer v3 doesn't print is never printed in part: the certificate shows "Untitled agreement (title not printable), " and the agreement's id instead.
 - In Helvetica when its encoding (WinAnsi) has every character, and otherwise in Noto Sans 2.015 (`src/fonts/noto-sans-400.ttf` and `noto-sans-700.ttf`, cut to `charset-v3.ts`, embedded as subsets); on the certificate, in Instrument Sans when it has every glyph, and otherwise in Noto Sans.
 
 Fourth, the certificate pages say that each party can prove they signed "and the date it was completed" (what a Share proof shows; renderer v2 says "and when"), and that a PDF reader's attachments panel lists the attached files (renderer v2 says any PDF reader lists them).
