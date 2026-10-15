@@ -49,7 +49,7 @@ import {
 } from "pdf-lib";
 import fontkit from "@pdf-lib/fontkit";
 import QRCode from "qrcode";
-import { printableV3 } from "./charset-v3";
+import { printableV3, unprintableV3 } from "./charset-v3";
 
 export const RENDERER_V3 = "attest.render.v3";
 
@@ -978,7 +978,8 @@ async function certificatePages(pdf: PDFDocument, input: RenderInputV3, certUrl:
   // Names and the title in Instrument Sans when it has every glyph they need, in Noto Sans when it doesn't.
   const boldFor = async (t: string) => (covers(bold, t) ? bold : await noto.bold());
   const sansFor = async (t: string) => (covers(sans, t) ? sans : await noto.regular());
-  const title = printable(a.title);
+  // A title v3 can't print whole isn't printed in part: the certificate names the agreement by its id instead.
+  const title = unprintableV3(oneLine(a.title)).length ? `Untitled agreement (title not printable), ${a.id}` : printable(a.title);
   const titleFont = await boldFor(title);
 
   // ---- The certificate -------------------------------------------------------------------------------
