@@ -3,7 +3,7 @@
 // older record verifies with any newer verifier; a record in a newer format is reported as such.
 const VERIFIER = {
   version: "1.5.0",
-  formats: { agreement: [1, 2, 3, 4, 5], receipt: [1, 2], certificate: [1, 2], card: [1, 2], proof: [1, 2], analytics: [1, 2] },
+  formats: { agreement: [1, 2, 3, 4, 5, 6], receipt: [1, 2], certificate: [1, 2], card: [1, 2], proof: [1, 2], analytics: [1, 2] },
   repo: "https://github.com/DataHubz/attest-verifier",
   latest: ["https://attest.datahubz.com/attest-verifier/latest.json", "https://raw.githubusercontent.com/DataHubz/attest-verifier/main/latest.json"],
 };
@@ -935,12 +935,20 @@ async function checkVisiblePages(ev, files, id, wallet) {
 
 // ===================================================================================== agreements, v5
 /**
- * Protocol v5 (agreement evidence v5): statements v3 name each signer by a salted commitment, never an email; the
- * signed state v3 lists each commitment with the SHA-256 of its statement; Attest's agreement anchor v2 also binds the
- * completion details (field layout, verification code, completion time, audit trail), so this page re-makes the visible
- * pages with renderer v2 and compares them byte for byte.
+ * The renderer each evidence format's pages are made with, which the completion details must name: v5 is renderer v2,
+ * and v6, the same evidence, is renderer v3 (every entry inside its field). Attest's anchor binds the details, so a
+ * copy can't change renderer.
  */
-async function verifyAgreementV5(ev, files) {
+const RENDERER_OF_FORMAT = { 5: "attest.render.v2", 6: "attest.render.v3" };
+
+/**
+ * Protocol v5 (agreement evidence v5 and v6): statements v3 name each signer by a salted commitment, never an email;
+ * the signed state v3 lists each commitment with the SHA-256 of its statement; Attest's agreement anchor v2 also binds
+ * the completion details (field layout, verification code, completion time, audit trail, renderer), so this page
+ * re-makes the visible pages with the renderer the details name and compares them byte for byte.
+ */
+async function verifyAgreementV5(ev, files, format) {
+  const renderer = RENDERER_OF_FORMAT[format];
   const id = str(ev.agreementId);
   const docSha = str(ev.document && ev.document.sha256);
   const signers = Array.isArray(ev.signers) ? ev.signers : [];
@@ -977,7 +985,7 @@ async function verifyAgreementV5(ev, files) {
   try { details = JSON.parse(ev.details); } catch {}
   const detailsSha = await sha256hex(ev.details);
   const commitments = signers.map((s) => s.commitment).sort().join("\n");
-  const detailsOk = details && canonicalJson(details) === ev.details && isHex64(details.trailSha256) && details.renderer === "attest.render.v2" && Array.isArray(details.signers) && [...details.signers].sort().join("\n") === commitments && Array.isArray(details.fields) && details.fields.every((f) => Array.isArray(f) && f.length === 8 && details.signers.includes(f[7]));
+  const detailsOk = details && canonicalJson(details) === ev.details && isHex64(details.trailSha256) && details.renderer === renderer && Array.isArray(details.signers) && [...details.signers].sort().join("\n") === commitments && Array.isArray(details.fields) && details.fields.every((f) => Array.isArray(f) && f.length === 8 && details.signers.includes(f[7]));
   if (!detailsOk) add("bad", "The completion details don't match this agreement", "They name other signers, or aren't in the form Attest anchors.");
   // The audit trail, which the details name by its SHA-256 (a signed copy carries it; the certificate doesn't).
   let trail = null;
@@ -1044,7 +1052,7 @@ async function verifyAgreementV5(ev, files) {
   }
 
   // 6. The visible pages, re-made here from what was signed.
-  if (files.outer) await checkVisiblePagesV5(ev, files, { id, title, stateSha, anchorTx, wallet, details: detailsOk ? details : null, trail, signers, statementOf, state, entries, entriesComplete, original });
+  if (files.outer) await checkVisiblePagesV5(ev, files, { renderer, id, title, stateSha, anchorTx, wallet, details: detailsOk ? details : null, trail, signers, statementOf, state, entries, entriesComplete, original });
   else if (ev.visibleCopy && isHex64(ev.visibleCopy.sha256)) add("info", "Drop the signed PDF itself to check the pages you see", `Its visible pages have SHA-256 ${mono(ev.visibleCopy.sha256)}.`);
 
   // 7. Zero-knowledge proofs about this agreement.
@@ -1062,27 +1070,27 @@ async function verifyAgreementV5(ev, files) {
 }
 
 /**
- * A v5 signed copy's visible pages must be exactly what renderer v2 makes from the original document, the completion
- * details, every signer's entries and name, the signed state and its anchor transaction. A party's browser made them
- * when it sealed the copy; this page makes them again and compares every byte.
+ * A v5 or v6 signed copy's visible pages must be exactly what its renderer (v2 or v3) makes from the original
+ * document, the completion details, every signer's entries and name, the signed state and its anchor transaction. A
+ * party's browser made them when it sealed the copy; this page makes them again and compares every byte.
  */
 async function checkVisiblePagesV5(ev, files, c) {
   const v = ev.visibleCopy;
   const len = v ? Number(v.byteLength) : NaN;
-  if (!v || !(Number.isInteger(len) && len > 0 && len < files.outer.length) || !["full", "pages", "certificate"].includes(v.variant) || v.renderer !== "attest.render.v2") { add("bad", "The pages you see are not the signed copy", "The file's structure doesn't match its evidence."); return; }
+  if (!v || !(Number.isInteger(len) && len > 0 && len < files.outer.length) || !["full", "pages", "certificate"].includes(v.variant) || v.renderer !== c.renderer) { add("bad", "The pages you see are not the signed copy", "The file's structure doesn't match its evidence."); return; }
   const certificate = v.variant === "certificate";
   const pages = files.outer.subarray(0, len);
-  const render2 = L.renderers && L.renderers["attest.render.v2"];
+  const remake = L.renderers && L.renderers[c.renderer];
   const needs = certificate ? null : !c.original ? "The original document isn't in this file." : !c.entriesComplete ? "A signer's entries are missing from the evidence." : v.variant === "full" && !c.trail ? "The audit trail isn't in the evidence." : null;
   // A v5 signed copy always carries what re-making its pages needs: without it, the file was changed.
   if (needs) { add("bad", "The pages you see can't be re-made from this file's evidence", `${needs} A ${v.variant === "pages" ? "signed pages copy" : "signed copy"} always carries it, so this file was changed.`); return; }
-  if (!c.details || !c.state || !c.anchorTx || !render2) {
+  if (!c.details || !c.state || !c.anchorTx || !remake) {
     add("warn", "The pages you see couldn't be re-made here", !c.anchorTx ? "The signed state's anchor transaction didn't check out." : "The signed state or the completion details didn't check out.");
     return;
   }
   let made = null;
   try {
-    made = await render2({
+    made = await remake({
       original: certificate ? null : c.original,
       variant: v.variant,
       appUrl: TRUST.webauthn.origin,
@@ -1108,10 +1116,10 @@ async function checkVisiblePagesV5(ev, files, c) {
     return;
   }
   if (certificate) {
-    add("ok", "The pages you see are exactly Attest's certificate of this agreement", "Re-made here, byte for byte, from every signer's signed statement, the signed state and Attest's anchored details (renderer attest.render.v2). Nothing follows them but the evidence and this verifier, attached as files.");
+    add("ok", "The pages you see are exactly Attest's certificate of this agreement", `Re-made here, byte for byte, from every signer's signed statement, the signed state and Attest's anchored details (renderer ${c.renderer}). Nothing follows them but the evidence and this verifier, attached as files.`);
     return;
   }
-  add("ok", "The pages you see are exactly the document as signed", `Re-made here, byte for byte, from the original document, every signer's entries in the places their statements name, and Attest's anchored details${v.variant === "full" ? " and audit trail, with the certificate pages" : ""} (renderer attest.render.v2). Nothing follows them but the evidence, the original document and this verifier, attached as files.`);
+  add("ok", "The pages you see are exactly the document as signed", `Re-made here, byte for byte, from the original document, every signer's entries in the places their statements name, and Attest's anchored details${v.variant === "full" ? " and audit trail, with the certificate pages" : ""} (renderer ${c.renderer}). Nothing follows them but the evidence, the original document and this verifier, attached as files.`);
   // The same pages, anchored when the copy was sealed: a second, independent hold on them.
   await onChain("The same pages, anchored when the copy was sealed", await sha256hex(`attest.signed_copy.v1|${c.id}|${v.variant}|${await sha256hex(pages)}`), {
     wallet: c.wallet,
@@ -1508,7 +1516,7 @@ async function verify(ev, files) {
   if (files && files.extraPdfs) add("bad", "This file carries more than one PDF", `${files.extraPdfs} PDFs are attached: a signed copy carries one, the document exactly as signed. Don't open the others.`);
   if (files && files.inPages && files.inPages.length) add("warn", `The signed pages carry ${files.inPages.length === 1 ? "a file" : `${files.inPages.length} files`} of their own`, "They were in the document as it was signed, so a PDF reader lists them next to Attest's attachments. They aren't Attest's: don't open them as its verifier or evidence.");
   try {
-    if (f.kind === "agreement") return f.v >= 5 ? await verifyAgreementV5(ev, files) : await verifyAgreement(f.v === 1 ? fromV1(ev) : ev, files);
+    if (f.kind === "agreement") return f.v >= 5 ? await verifyAgreementV5(ev, files, f.v) : await verifyAgreement(f.v === 1 ? fromV1(ev) : ev, files);
     if (f.kind === "receipt") return await verifyReceipt(ev, files);
     if (f.kind === "certificate") return await verifyCertificate(ev, files);
     if (f.kind === "card") return await verifyCard(ev);
