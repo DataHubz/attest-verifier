@@ -21,7 +21,7 @@ Each format and check is specified in [FORMAT.md](FORMAT.md), so the checks can 
 
 ## Use
 
-1. Download `attest-verifier.html` from the latest release, or save the copy attached to a signed PDF (any PDF reader lists its attachments).
+1. Download `attest-verifier.html` from the latest release, or save the copy attached to a signed PDF (a PDF reader's attachments panel lists it).
 2. Open it in a current browser. It works from disk, offline, except the on-chain checks, which read from Horizen's public node. Any other node of Horizen can be entered on the page: it is only a source of data, checked against the pinned registries and authority.
 3. Drop a signed PDF, or an evidence file (`attest-evidence-….json`) downloaded from a record's page. Add the original file or the certificate PDF to check it too.
 
