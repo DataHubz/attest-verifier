@@ -17,7 +17,7 @@ The verifier pins these values in `src/main.js` (`TRUST`) and never reads them f
 | Passkey site | relying party `attest.datahubz.com`, origin `https://attest.datahubz.com` |
 | Circuits | the Groth16 verification keys in `src/circuits/` |
 | Vocabulary | the JSON-LD contexts in `src/contexts/` |
-| Renderer | `attest.render.v2` in `src/renderer/v2.ts`, with its fonts in `src/fonts/` |
+| Renderers | `attest.render.v2` and `attest.render.v3` in `src/renderer/`, with their fonts in `src/fonts/`; an agreement's anchored completion details name its renderer |
 
 The registries are open: any wallet can anchor any value. An anchor counts as Attest's only when the wallet that made
 it is registered on AttestRegistryV3 by the registry authority and was not revoked before the anchor. The authority is
@@ -42,6 +42,7 @@ leaves, `sha256(receiptId + ":" + fingerprint)`. No account can make an Attest w
 | Content added to a signed copy after its evidence (a second PDF update that overlays a page, a script, an annotation) | The verifier reads the file strictly: after the signed pages there must be exactly Attest's update, attaching the evidence, the original and the verifier, with a catalog that is otherwise the pages' own. Anything else fails, and the verifier offers the signed pages exactly as sealed. |
 | The signed pages edited | Their SHA-256 no longer matches the anchored value. |
 | Pages drawn by whoever sealed the copy with an entry, a name, a date or a field moved (protocol v5) | The verifier re-makes the pages from what the passkeys signed and Attest anchored, with the same deterministic renderer, and compares every byte: pages that show anything else fail. |
+| Pages made by another renderer than the agreement's (renderer v3's pages under evidence v5, or v2's under v6) | The completion details name the renderer and Attest's agreement anchor binds them, and the evidence format must match it (v5 for renderer v2, v6 for v3): the pages are re-made only with the renderer the anchored details name. |
 | A signer's entries drawn in another place | Each statement signs where its signer's entries appear (`layoutSha256`); Attest's anchor binds every field's place and owner. |
 | A zero-knowledge proof checked against a key that accepts anything | Proofs are checked only against the pinned verification keys. |
 | A certificate or Proof Card signed by a key the forger adds to the issuer's DID document | The DID document may hold only the key Attest committed on chain from the issuer's wallet; every proof must name it, and no other DID resolves. |
@@ -57,10 +58,11 @@ leaves, `sha256(receiptId + ":" + fingerprint)`. No account can make an Attest w
 
 ## What a result covers
 
-- **Signed copies from evidence v5** (protocol v5, October 12, 2026 on): the verifier re-makes the visible pages from the
-  original document, each signer's signed statement and entries, the signed state and Attest's anchored completion
-  details, and checks them byte for byte against the copy and against the value anchored when it was sealed. The record
-  names people only by name: each signer's email is behind a salted commitment that only the parties can open.
+- **Signed copies from evidence v5 and v6** (protocol v5, October 12, 2026 on): the verifier re-makes the visible pages
+  from the original document, each signer's signed statement and entries, the signed state and Attest's anchored
+  completion details, with the renderer those details name (v2 for evidence v5, v3 for v6), and checks them byte for
+  byte against the copy and against the value anchored when it was sealed. The record names people only by name: each
+  signer's email is behind a salted commitment that only the parties can open.
 - **Signed copies from evidence v3 and v4** (October 10, 2026 on): the visible pages are the copy anchored when the
   agreement completed, made in the browser of a party to the agreement. The verifier checks them byte for byte and
   checks the original document inside against what every signer signed.

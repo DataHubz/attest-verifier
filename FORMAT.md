@@ -134,7 +134,7 @@ The signed copy is the visible pages, saved with a classic cross-reference table
 
 Signed copies made from 2026-10-12. Format v3, with each proof's `root` (`value`, `anchor` with `txHash` and `from`) and the check list above. Anchors may be on AttestRegistryV3.
 
-Copies in formats v1 and v2 authenticate the original document inside them, not their visible pages. Copies in formats v3 and v4 authenticate their visible pages as anchored when sealed; copies in format v5 also re-make them from what was signed.
+Copies in formats v1 and v2 authenticate the original document inside them, not their visible pages. Copies in formats v3 and v4 authenticate their visible pages as anchored when sealed; copies in formats v5 and v6 also re-make them from what was signed.
 
 ## Format v5 (`attest.agreement_evidence.v5`)
 
@@ -191,6 +191,23 @@ The certificate PDF that Attest serves for a v5 agreement, to anyone allowed to 
 ### Attached files
 
 A reader lists every file a PDF's file specifications attach (`/EF`), whatever its name or first bytes. The verifier finds them the same way and requires: in a strictly read signed copy or certificate, `attest-verifier.html` is a verifier build Attest anchored, and any file the signed pages carry themselves is reported; in any other PDF with Attest evidence, every attached file other than the evidence and one PDF (the document) is a verifier build Attest anchored.
+
+## Format v6 (`attest.agreement_evidence.v6`)
+
+Signed copies and certificates of agreements completed with renderer v3, from its release (verifier 1.6.0) on. Format v5 in every field and check, with renderer `attest.render.v3` in place of `attest.render.v2`: `details.renderer` and `visibleCopy.renderer` are `attest.render.v3`, and check 10 re-makes the pages with `src/renderer/v3.ts`, from the same inputs. A v5 record must name renderer v2 and a v6 record renderer v3. The completion details record the renderer and Attest's agreement anchor binds them, so an agreement keeps the renderer it was completed with: copies of agreements completed with renderer v2 stay format v5, whenever they are sealed.
+
+Renderer v3 is renderer v2 with one change, in how entries are drawn: everything drawn for an entry stays inside the field the sender placed (its `x, y, w, h` in `details.fields`, fractions of the page from its top left).
+
+- A signature's stamp (bracket, signature, label, verification code, signing day and QR code) is laid out inside its field, whatever its size; it never grows past it. Its parts keep clear of the field's edges: a tenth of its height (at most 3 points) above and below, and 3% of its width (at most 3 points) at the sides. The bracket, the signature and the text share a band along the bottom of what is left, which leaves free its top 28% (at most 9 points). The QR code may rise above the band, as tall as the field allows within its edges (at most 30 points, and a quarter of its width), centered on the band when it fits in it; one under 12 points is left out. The label, code and day are set side by side with the signature, at up to 5 points within 36% of the room beside the QR code, or above the signature in a field too tall for that; a field too small for them at 3.4 points leaves out the label, then the day, then the code (the foot of every page carries the code and the link to verify).
+- A signature or initials image is fitted by the part of it that carries ink (its pixels at least an eighth opaque, or darker than light gray in an image with no transparency), and clipped to the stamp.
+- Initials get an "Attest" stamp with the code, by the same rules, with no day or QR code.
+- A date, name or text entry is set at up to 12 points (70% of the field's height), on one line or wrapped onto more when that sets it larger, never wider or taller than its field.
+
+Everything else is drawn as by renderer v2: the document without anything that runs or attaches, the seal line at the foot of every page, and the certificate, audit trail and verification pages (each signer's stamp on the certificate drawn by the rules above).
+
+### The certificate (format v6)
+
+As format v5's, made by renderer `attest.render.v3`: its evidence is format v6.
 
 
 ## Format v1 (`attest.agreement_evidence.v1`)
