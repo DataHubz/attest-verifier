@@ -1052,8 +1052,8 @@ async function verifyAgreementV5(ev, files, format) {
   }
 
   // 6. The visible pages, re-made here from what was signed.
-  if (files.outer) await checkVisiblePagesV5(ev, files, { renderer, id, title, stateSha, anchorTx, wallet, details: detailsOk ? details : null, trail, signers, statementOf, state, entries, entriesComplete, original });
-  else if (ev.visibleCopy && isHex64(ev.visibleCopy.sha256)) add("info", "Drop the signed PDF itself to check the pages you see", `Its visible pages have SHA-256 ${mono(ev.visibleCopy.sha256)}.`);
+  const notClean = files.outer ? await checkVisiblePagesV5(ev, files, { renderer, id, title, stateSha, anchorTx, wallet, details: detailsOk ? details : null, trail, signers, statementOf, state, entries, entriesComplete, original }) : false;
+  if (!files.outer && ev.visibleCopy && isHex64(ev.visibleCopy.sha256)) add("info", "Drop the signed PDF itself to check the pages you see", `Its visible pages have SHA-256 ${mono(ev.visibleCopy.sha256)}.`);
 
   // 7. Zero-knowledge proofs about this agreement.
   for (const p of ev.proofs || []) {
@@ -1065,14 +1065,15 @@ async function verifyAgreementV5(ev, files, format) {
     "agreement",
     title || "Signed agreement",
     [names.length ? `Signed by ${esc(names.join(", "))}` : "", detailsOk ? `completed ${when(details.completedAt)}` : "", code ? `verification code ${esc(code)}` : "", stateAt || agreementAt ? `anchored ${when(stateAt || agreementAt)}` : ""].filter(Boolean).join(" · "),
-    certificate && files.outer ? "Verified: this certificate's pages, re-made here from what was signed, every signer's passkey signature, and Attest's record of the agreement, anchored on the public blockchain." : original ? (files.outer ? "Verified: the pages you see, re-made here from what was signed, the document, every signer's passkey signature and entries, and Attest's record of the agreement, anchored on the public blockchain." : null) : "Verified: every signer's passkey signature and entries, and Attest's record of the agreement, anchored on the public blockchain. Drop the original document too, to check it is the one signed.",
+    certificate && files.outer ? "Verified: this certificate's pages, re-made here from what was signed, every signer's passkey signature, and Attest's record of the agreement, anchored on the public blockchain." : original ? (files.outer ? (notClean ? `Verified: the document as signed (attached to this copy), every signer's passkey signature and entries, and Attest's record of the agreement, anchored on the public blockchain. This copy's pages were re-made here from what was signed. ${L.notCleanNote}` : "Verified: the pages you see, re-made here from what was signed, the document, every signer's passkey signature and entries, and Attest's record of the agreement, anchored on the public blockchain.") : null) : "Verified: every signer's passkey signature and entries, and Attest's record of the agreement, anchored on the public blockchain. Drop the original document too, to check it is the one signed.",
   );
 }
 
 /**
  * A v5 or v6 signed copy's visible pages must be exactly what its renderer (v2 or v3) makes from the original
  * document, the completion details, every signer's entries and name, the signed state and its anchor transaction. A
- * party's browser made them when it sealed the copy; this page makes them again and compares every byte.
+ * party's browser made them when it sealed the copy; this page makes them again and compares every byte. Returns
+ * whether the document isn't clean for renderer v3 (its copy's pages may look different in some PDF readers).
  */
 async function checkVisiblePagesV5(ev, files, c) {
   const v = ev.visibleCopy;
@@ -1119,13 +1120,23 @@ async function checkVisiblePagesV5(ev, files, c) {
     add("ok", "The pages you see are exactly Attest's certificate of this agreement", `Re-made here, byte for byte, from every signer's signed statement, the signed state and Attest's anchored details (renderer ${c.renderer}). Nothing follows them but the evidence and this verifier, attached as files.`);
     return;
   }
-  add("ok", "The pages you see are exactly the document as signed", `Re-made here, byte for byte, from the original document, every signer's entries in the places their statements name, and Attest's anchored details${v.variant === "full" ? " and audit trail, with the certificate pages" : ""} (renderer ${c.renderer}). Nothing follows them but the evidence, the original document and this verifier, attached as files.`);
+  // A document renderer v3's check finds not clean: its copy was made with the best protection v3 can give, and says so.
+  const check = L.cleanCheck && L.cleanCheck[c.renderer];
+  const notClean = check ? !(await check(c.original).catch(() => false)) : false;
+  if (notClean) {
+    add("ok", "This copy's pages are exactly the ones Attest made from what was signed", `Re-made here, byte for byte, from the original document, every signer's entries in the places their statements name, and Attest's anchored details${v.variant === "full" ? " and audit trail, with the certificate pages" : ""} (renderer ${c.renderer}). Nothing follows them but the evidence, the original document and this verifier, attached as files.`);
+    add("info", L.notCleanNote, "The original document is attached to this copy exactly as it was signed, and its fingerprint is the one anchored: that is what was signed. Open it from this copy's attachments, or save it here.");
+    downloads.push({ label: "Save the document exactly as signed", name: `${c.id}-original-document.pdf`, type: "application/pdf", bytes: c.original });
+  } else {
+    add("ok", "The pages you see are exactly the document as signed", `Re-made here, byte for byte, from the original document, every signer's entries in the places their statements name, and Attest's anchored details${v.variant === "full" ? " and audit trail, with the certificate pages" : ""} (renderer ${c.renderer}). Nothing follows them but the evidence, the original document and this verifier, attached as files.`);
+  }
   // The same pages, anchored when the copy was sealed: a second, independent hold on them.
   await onChain("The same pages, anchored when the copy was sealed", await sha256hex(`attest.signed_copy.v1|${c.id}|${v.variant}|${await sha256hex(pages)}`), {
     wallet: c.wallet,
     missing: "wait",
     missingDetail: "Attest anchors a signed copy's pages, from the wallet that anchored the agreement, when a party seals it. If the copy was made in the last few minutes, its anchor is on its way: check again shortly.",
   });
+  return notClean;
 }
 
 // ============================================================================================== receipts

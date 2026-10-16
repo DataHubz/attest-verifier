@@ -10,7 +10,7 @@ import { verifyGroth16 } from "./groth16.mjs";
 import { p256 } from "@noble/curves/p256";
 // Renderers v2 and v3 re-make a v5 or v6 signed copy's visible pages; the certificate fonts they embed travel with them.
 import { renderV2, RENDERER_V2 } from "./renderer/v2.ts";
-import { renderV3, RENDERER_V3 } from "./renderer/v3.ts";
+import { renderV3, RENDERER_V3, documentProblemsV3, NOT_CLEAN_NOTE } from "./renderer/v3.ts";
 import { PDFArray, PDFDict, PDFDocument, PDFName, PDFRawStream, PDFRef, decodePDFRawStream } from "pdf-lib";
 import instrumentSans400 from "./fonts/instrument-sans-400.ttf";
 import instrumentSans600 from "./fonts/instrument-sans-600.ttf";
@@ -93,6 +93,10 @@ window.AttestLibs = {
     [RENDERER_V2]: (input) => renderV2({ ...input, fonts: { sans: instrumentSans400, bold: instrumentSans600, mono: jetbrainsMono400 } }),
     [RENDERER_V3]: (input) => renderV3({ ...input, fonts: { sans: instrumentSans400, bold: instrumentSans600, mono: jetbrainsMono400, noto: notoSans400, notoBold: notoSans700 } }),
   },
+  // Whether a document is clean for renderer v3 (its copy shows exactly what pdf.js showed the signer, in every reader
+  // Attest tests), and the sentence a copy of one that isn't carries.
+  cleanCheck: { [RENDERER_V3]: async (original) => (await documentProblemsV3(original)).length === 0 },
+  notCleanNote: NOT_CLEAN_NOTE,
   circuits: {
     agreement_membership: agreementMembership,
     agreement_with_party: agreementWithParty,
