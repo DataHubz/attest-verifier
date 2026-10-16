@@ -53,6 +53,7 @@ import fontkit from "@pdf-lib/fontkit";
 import QRCode from "qrcode";
 import { printableV3, unprintableV3 } from "./charset-v3";
 import { UnreadablePdf, openOriginalV3 } from "./decrypt-v3";
+import { FALLBACK_FONT, fieldDrawing, fieldEnv, numberToString as pdfjsNumber, type FieldEnv } from "./fields-v3";
 
 export const RENDERER_V3 = "attest.render.v3";
 
@@ -1702,7 +1703,7 @@ function withoutOptionalContent(pdf: PDFDocument, pages: PDFPage[], places: OcPl
       if (decoded.every((d): d is Uint8Array => typeof d !== "string")) pageContent.set(page, withoutHidden(w, joined(decoded), inherited(pdf, page.node, "Resources"), "0"));
     }
     // Annotations pdf.js prints, then glyphs, patterns' cells and soft masks' groups: each from a start with nothing hidden.
-    const others: PDFRawStream[] = printed.flat().map((x) => x.appearance);
+    const others: PDFRawStream[] = printed.flat().flatMap((x) => (x.appearance ? [x.appearance] : []));
     for (const [ref, kind] of contentStreams(pdf)) {
       const s = ctx.lookup(ref);
       if (kind !== "form" && s instanceof PDFRawStream) others.push(s);
@@ -1813,8 +1814,14 @@ function numbers(pdf: PDFDocument, v: unknown, len: number | null): number[] | n
 /** A number as content streams write it: pdf-lib's own form (no exponent), the same in every engine. */
 const numberText = (x: number) => PDFNumber.of(x).toString();
 
-/** An annotation pdf.js prints, with the appearance it draws and where. */
-type Printed = { appearance: PDFRawStream; rect: Rect4 };
+/**
+ * An annotation pdf.js prints, with the appearance it draws and where: its own appearance stream, or content pdf.js
+ * generates for a form field (drawn with the field's resources, mapped from [0 0 width height] onto its Rect, then
+ * turned by its rotation), or a value pdf.js draws with a font of the browser's own (`unencodable`).
+ */
+type Printed =
+  | { appearance: PDFRawStream; rect: Rect4 }
+  | { appearance?: undefined; rect: Rect4; generated: { content: string; resources: PDFDict; width: number; height: number; matrix: number[]; exact: boolean; unencodable?: { lines: string[]; fontSize: number; alignment: number; multiline: boolean; comb: boolean } } };
 
 /**
  * The annotations pdf.js prints on a page, in pdf.js's order (others, then widgets): flagged Print, and not Hidden or
@@ -1822,7 +1829,7 @@ type Printed = { appearance: PDFRawStream; rect: Rect4 };
  * optional content it shows, with an appearance stream (the one /AS names, in a state dictionary). Links and pop-ups
  * print nothing.
  */
-function printedAnnotations(pdf: PDFDocument, page: PDFPage, shown: (oc: unknown) => boolean): Printed[] {
+function printedAnnotations(pdf: PDFDocument, page: PDFPage, shown: (oc: unknown) => boolean, env: FieldEnv): Printed[] {
   const annots = lookupIn(pdf, inherited(pdf, page.node, "Annots"));
   if (!(annots instanceof PDFArray)) return [];
   const all = annots.asArray().map((x) => lookupIn(pdf, x)).filter((a): a is PDFDict => a instanceof PDFDict);
@@ -1846,6 +1853,33 @@ function printedAnnotations(pdf: PDFDocument, page: PDFPage, shown: (oc: unknown
     if (oc !== undefined && !shown(oc)) continue;
     const r = numbers(pdf, a.get(PDFName.of("Rect")), 4) ?? [0, 0, 0, 0];
     const rect: Rect4 = [Math.min(r[0], r[2]), Math.min(r[1], r[3]), Math.max(r[0], r[2]), Math.max(r[1], r[3])];
+    if (subtype === "Widget") {
+      // A form field: what pdf.js draws for it (fields-v3.ts), its own appearance or one pdf.js generates.
+      let d: ReturnType<typeof fieldDrawing>;
+      try {
+        d = fieldDrawing(pdf, a, env);
+      } catch (e) {
+        if (resourceError(e)) throw e;
+        d = { kind: "none" };
+      }
+      if (d.kind === "stored") out.push({ appearance: d.stream, rect });
+      else if (d.kind === "default-checked") {
+        const resources = pdf.context.obj({ Font: { PdfJsZaDb: pdf.context.obj({ Type: "Font", Subtype: "Type1", BaseFont: "ZapfDingbats" } as never) } } as never) as unknown as PDFDict;
+        out.push({ rect, generated: { content: d.content, resources, width: d.width, height: d.height, matrix: [1, 0, 0, 1, 0, 0], exact: true } });
+      } else if (d.kind === "generated") {
+        let resources = d.resources;
+        if (d.fallbackFont) {
+          // pdf.js draws with its fallback Helvetica when the DA's font isn't there: the copy names the same font.
+          resources = d.resources.clone(pdf.context);
+          const fonts = lookupIn(pdf, resources.get(PDFName.of("Font")));
+          const f = fonts instanceof PDFDict ? fonts.clone(pdf.context) : (pdf.context.obj({}) as PDFDict);
+          f.set(PDFName.of(d.fallbackFont), pdf.context.obj(FALLBACK_FONT as never));
+          resources.set(PDFName.of("Font"), f);
+        }
+        out.push({ rect, generated: { content: d.content, resources, width: d.width, height: d.height, matrix: d.matrix, exact: d.exact, unencodable: d.unencodable } });
+      }
+      continue;
+    }
     const ap = lookupIn(pdf, a.get(PDFName.of("AP")));
     let appearance: unknown = ap instanceof PDFDict ? lookupIn(pdf, ap.get(PDFName.of("N"))) : undefined;
     if (appearance instanceof PDFDict) {
@@ -1860,26 +1894,80 @@ function printedAnnotations(pdf: PDFDocument, page: PDFPage, shown: (oc: unknown
 /**
  * Annotations pdf.js prints, drawn as page content after the page's own: each appearance a form XObject added to
  * `xobjects` (closed off, with what pdf.js hid taken out where v3 took it out), mapped from its BBox through its Matrix
- * onto its Rect as pdf.js maps it, and clipped to its Rect.
+ * onto its Rect as pdf.js maps it, and clipped to its Rect. A field's generated appearance is drawn the same way, from
+ * [0 0 width height] onto its Rect and turned by its rotation, with the field's resources.
  */
-function drawAnnotations(pdf: PDFDocument, printed: Printed[], xobjects: PDFDict, rewritten: Map<PDFRawStream, Uint8Array>): string {
+function drawAnnotations(pdf: PDFDocument, printed: Printed[], xobjects: PDFDict, rewritten: Map<PDFRawStream, Uint8Array>, notoFields: Map<Printed, { content: string; resources: PDFDict }>): string {
   const ctx = pdf.context;
   let out = "";
-  for (const { appearance, rect } of printed) {
+  const nums = (xs: number[]) => xs.map((x) => numberText(x)).join(" ");
+  for (const item of printed) {
+    const { rect } = item;
     const w = rect[2] - rect[0], h = rect[3] - rect[1];
+    const k = xobjects.keys().length;
+    if (!item.appearance) {
+      const g = item.generated;
+      const noto = notoFields.get(item);
+      const content = noto ? noto.content : g.content;
+      const form = ctx.flateStream(Uint8Array.from(content, (c) => c.charCodeAt(0) & 0xff), { Type: "XObject", Subtype: "Form", BBox: [-1e9, -1e9, 1e9, 1e9] } as never);
+      form.dict.set(PDFName.of("Resources"), noto ? noto.resources : g.resources);
+      xobjects.set(PDFName.of(`AttestAnnot${k}`), ctx.register(form));
+      const t = appearanceTransform(rect, [0, 0, g.width, g.height], [1, 0, 0, 1, 0, 0]);
+      out += `q ${nums([rect[0], rect[1], w, h])} re W n ${nums(t)} cm ${nums(g.matrix)} cm /AttestAnnot${k} Do Q\n`;
+      continue;
+    }
+    const appearance = item.appearance;
     const bbox = numbers(pdf, appearance.dict.get(PDFName.of("BBox")), 4) ?? [0, 0, w, h];
     const matrix = numbers(pdf, appearance.dict.get(PDFName.of("Matrix")), 6) ?? [1, 0, 0, 1, 0, 0];
     const t = appearanceTransform(rect, bbox, matrix);
     const resources = lookupIn(pdf, appearance.dict.get(PDFName.of("Resources")));
-    const k = xobjects.keys().length;
     const form = closedOffStream(pdf, appearance, { Type: "XObject", Subtype: "Form", BBox: [-1e9, -1e9, 1e9, 1e9], Resources: resources instanceof PDFDict ? resources : {} }, rewritten.get(appearance));
     form.dict.delete(PDFName.of("Matrix"));
     form.dict.delete(PDFName.of("OC"));
     xobjects.set(PDFName.of(`AttestAnnot${k}`), ctx.register(form));
-    const nums = (xs: number[]) => xs.map((x) => numberText(x)).join(" ");
     out += `q ${nums([rect[0], rect[1], w, h])} re W n ${nums(t)} cm ${nums(matrix)} cm /AttestAnnot${k} Do Q\n`;
   }
   return out;
+}
+
+/**
+ * A value pdf.js draws with a font of the browser's own (the field's font can't encode it): drawn here with Noto Sans,
+ * embedded, laid out as pdf.js lays out a value (its size, or one fitted to the field; aligned; over lines for a
+ * multiline field). Not what the signer's browser drew, glyph for glyph: the document isn't clean, and its copy says so.
+ */
+function notoFieldContent(pdf: PDFDocument, g: Extract<Printed, { generated: unknown }>["generated"], font: PDFFont): { content: string; resources: PDFDict } {
+  const u = g.unencodable!;
+  let totalWidth = g.width, totalHeight = g.height;
+  if (g.matrix[1] !== 0) [totalWidth, totalHeight] = [totalHeight, totalWidth];
+  const text = (s: string) => printable(s);
+  const widthOf = (s: string, size: number) => font.widthOfTextAtSize(text(s), size);
+  let fontSize = u.fontSize;
+  const lines = u.lines.map(text);
+  if (!fontSize) {
+    const longest = lines.reduce((m, l) => Math.max(m, widthOf(l, 1)), 0);
+    fontSize = Math.floor(Math.min((totalHeight - 2) / (u.multiline ? 1.35 * Math.max(lines.length, 1) : 1.35), longest ? (totalWidth - 4) / longest : Infinity) * 100) / 100;
+  }
+  const ops: string[] = ["/Tx BMC q BT", `/AttestNotoField ${pdfjsNumber(fontSize)} Tf 0 g`];
+  const place = (line: string, y: number) => {
+    const lw = widthOf(line, fontSize);
+    const x = u.alignment === 1 ? (totalWidth - lw) / 2 : u.alignment === 2 ? totalWidth - lw - 2 : 2;
+    ops.push(`1 0 0 1 ${pdfjsNumber(x)} ${pdfjsNumber(y)} Tm ${font.encodeText(line).toString()} Tj`);
+  };
+  if (u.multiline) {
+    const lineHeight = fontSize * 1.35;
+    let y = totalHeight - 1 - fontSize;
+    for (const line of lines) {
+      place(line, y);
+      y -= lineHeight;
+    }
+  } else place(lines[0] ?? "", (totalHeight - 1.35 * fontSize) / 2 + 0.35 * fontSize);
+  ops.push("ET Q EMC");
+  const resources = g.resources.clone(pdf.context);
+  const fonts = lookupIn(pdf, resources.get(PDFName.of("Font")));
+  const f = fonts instanceof PDFDict ? fonts.clone(pdf.context) : (pdf.context.obj({}) as PDFDict);
+  f.set(PDFName.of("AttestNotoField"), font.ref);
+  resources.set(PDFName.of("Font"), f);
+  return { content: ops.join("\n"), resources };
 }
 
 /**
@@ -1887,7 +1975,7 @@ function drawAnnotations(pdf: PDFDocument, printed: Printed[], xobjects: PDFDict
  * pdf.js hid taken out where v3 took it out, kept as it was where v3 can't read it), then the annotations pdf.js prints,
  * drawn as page content. No annotation is left on the page.
  */
-function protectPage(pdf: PDFDocument, page: PDFPage, media: Rect4, printed: Printed[], pageContent: Uint8Array | undefined, rewritten: Map<PDFRawStream, Uint8Array>) {
+function protectPage(pdf: PDFDocument, page: PDFPage, media: Rect4, printed: Printed[], pageContent: Uint8Array | undefined, rewritten: Map<PDFRawStream, Uint8Array>, notoFields: Map<Printed, { content: string; resources: PDFDict }>) {
   const ctx = pdf.context;
   const node = page.node;
   const resources = inherited(pdf, node, "Resources");
@@ -1918,7 +2006,7 @@ function protectPage(pdf: PDFDocument, page: PDFPage, media: Rect4, printed: Pri
       content += `q /AttestPage${k} Do Q\n`;
     }
   }
-  content += drawAnnotations(pdf, printed, xobjects, rewritten);
+  content += drawAnnotations(pdf, printed, xobjects, rewritten, notoFields);
   node.set(PDFName.of("Resources"), ctx.obj({ XObject: xobjects }));
   node.set(PDFName.of("Contents"), ctx.register(ctx.flateStream(content)));
   for (let d: unknown = node, seen = 0; d instanceof PDFDict && seen < 64; d = lookupIn(pdf, d.get(PDFName.of("Parent"))), seen++) d.delete(PDFName.of("Annots"));
@@ -1930,20 +2018,29 @@ function protectPage(pdf: PDFDocument, page: PDFPage, media: Rect4, printed: Pri
  * pdf.js runs; otherwise (content v3 keeps as it was, in a document whose optional content pdf.js hides) given to every
  * reader as pdf.js decided it, in two layers.
  */
-function protectDocument(pdf: PDFDocument, pages: PDFPage[], media: Rect4[]) {
+async function protectDocument(pdf: PDFDocument, pages: PDFPage[], media: Rect4[], noto: () => Promise<PDFFont>, env: FieldEnv) {
   const visible = pdfjsOptionalContent(pdf);
   const places = optionalContentPlaces(pdf, visible);
+  // Values pdf.js draws with a font of the browser's own, drawn here with Noto Sans.
+  const notoFieldsOf = async (printed: Printed[][]) => {
+    const out = new Map<Printed, { content: string; resources: PDFDict }>();
+    for (const item of printed.flat()) if (!item.appearance && item.generated.unencodable) out.set(item, notoFieldContent(pdf, item.generated, await noto()));
+    return out;
+  };
   if (places.some((p) => !p.shown) && !readableThroughout(pdf, pages)) {
     const shown = settleOptionalContent(pdf, places);
     const none = new Map<PDFRawStream, Uint8Array>();
     closeOffContentStreams(pdf, none);
-    for (const [i, p] of pages.entries()) protectPage(pdf, p, media[i], printedAnnotations(pdf, p, shown), undefined, none);
+    const printed = pages.map((p) => printedAnnotations(pdf, p, shown, env));
+    const notoFields = await notoFieldsOf(printed);
+    for (const [i, p] of pages.entries()) protectPage(pdf, p, media[i], printed[i], undefined, none, notoFields);
     return;
   }
-  const printed = pages.map((p) => printedAnnotations(pdf, p, visible));
+  const printed = pages.map((p) => printedAnnotations(pdf, p, visible, env));
   const done = withoutOptionalContent(pdf, pages, places, visible, printed);
   closeOffContentStreams(pdf, done.rewritten);
-  for (const [i, p] of pages.entries()) protectPage(pdf, p, media[i], printed[i], done.pageContent.get(p), done.rewritten);
+  const notoFields = await notoFieldsOf(printed);
+  for (const [i, p] of pages.entries()) protectPage(pdf, p, media[i], printed[i], done.pageContent.get(p), done.rewritten, notoFields);
 }
 
 /** An error from the engine running out of room, not from the document: never turned into a different copy. */
@@ -2346,6 +2443,11 @@ async function signedPages(input: RenderInputV3, original: Uint8Array): Promise<
     if (resourceError(e)) throw e;
     clean = false;
   }
+  // What the form fields need (NeedAppearances, the XFA dataset), read before active content goes (XFA among it).
+  const fields = clean ? null : fieldEnv(pdf, (st) => {
+    const c = contentOf(pdf, st);
+    return typeof c === "string" ? null : c;
+  });
   stripActiveContent(pdf);
   const { agreement: a, details: d } = input;
   const code = d.verifyCode;
@@ -2361,7 +2463,7 @@ async function signedPages(input: RenderInputV3, original: Uint8Array): Promise<
   if (!pages.length) throw new Error("A PDF without pages");
   const shown = pages.map((p) => shownPage(pdf, p));
   if (clean) for (const [i, p] of pages.entries()) isolatePage(pdf, p, shown[i].media);
-  else protectDocument(pdf, pages, shown.map((x) => x.media));
+  else await protectDocument(pdf, pages, shown.map((x) => x.media), noto.regular, fields!);
   // No form fields in the copy: a clean document had none to show, and the rest were drawn into their pages.
   pdf.catalog.delete(PDFName.of("AcroForm"));
   for (const [i, p] of pages.entries()) p.pushOperators(pushGraphicsState(), concatTransformationMatrix(...shown[i].m));

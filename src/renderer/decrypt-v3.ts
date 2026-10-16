@@ -8,6 +8,7 @@
 // ciphers in pdf.js's crypto.js, which it follows step for step, including how pdf.js reads a string's bytes, removes
 // AES padding and feeds a stream to its cipher 512 bytes at a time), and gives renderer v3 the decrypted document. A
 // document pdf.js opens only with a password, or doesn't open at all, can't be decrypted here either.
+// Its code follows pdf.js's (Copyright Mozilla Foundation, Apache License 2.0), rewritten over pdf-lib's objects.
 //
 // Everything is plain JavaScript (no WebCrypto, no Math functions whose results engines may round differently), so the
 // app, the open verifier and every browser decrypt a document to the same bytes. A byte-identical copy lives in
