@@ -52,6 +52,7 @@ import {
 import fontkit from "@pdf-lib/fontkit";
 import QRCode from "qrcode";
 import { printableV3, unprintableV3 } from "./charset-v3";
+import { UnreadablePdf, openOriginalV3 } from "./decrypt-v3";
 
 export const RENDERER_V3 = "attest.render.v3";
 
@@ -1058,13 +1059,14 @@ function isolatePage(pdf: PDFDocument, page: PDFPage, media: Rect4) {
 export async function documentProblemsV3(original: Uint8Array): Promise<string[]> {
   let pdf: PDFDocument;
   try {
-    pdf = await PDFDocument.load(original, { updateMetadata: false });
+    // Decrypted first, if it's encrypted and pdf.js opens it without a password: its content decides, as any other's.
+    pdf = await openOriginalV3(original);
   } catch (e) {
     if (resourceError(e)) throw e;
-    return ["a PDF that can't be read (an encrypted or damaged file)"];
+    return [UNREADABLE[unreadableKind(e)]];
   }
   // A file pdf-lib opens without a catalog (not really a PDF) is as unreadable as one it can't open.
-  if (!(pdf.catalog instanceof PDFDict)) return ["a PDF that can't be read (an encrypted or damaged file)"];
+  if (!(pdf.catalog instanceof PDFDict)) return [UNREADABLE.damaged];
   try {
     return documentProblems(pdf);
   } catch (e) {
@@ -1094,6 +1096,14 @@ export async function documentProblemsV3(original: Uint8Array): Promise<string[]
 //   content as it was (it can't read it) in a document whose optional content pdf.js hides does the copy keep optional
 //   content: pdf.js's decisions, as one layer that is on and one that is off.
 // - Attest's layer is drawn last.
+
+/** Why a document can't be opened at all, as the check gives it. */
+const UNREADABLE = {
+  password: "a PDF that can't be read (it opens only with a password)",
+  unsupported: "a PDF that can't be read (encrypted in a way pdf.js doesn't open)",
+  damaged: "a PDF that can't be read (a damaged file)",
+} as const;
+const unreadableKind = (e: unknown): keyof typeof UNREADABLE => (e instanceof UnreadablePdf ? e.kind : "damaged");
 
 /** The sentence a copy of a document that isn't clean carries. */
 export const NOT_CLEAN_NOTE = "Some PDF readers may display parts of this document differently. Attest's verifier shows exactly what was signed.";
@@ -2318,13 +2328,13 @@ export async function renderV3(input: RenderInputV3): Promise<Uint8Array> {
     return await signedPages(input, input.original);
   } catch (e) {
     if (resourceError(e)) throw e;
-    return unreproducedPages(input);
+    return unreproducedPages(input, unreadableKind(e));
   }
 }
 
 /** The signed pages of the document (and, for the full copy, the certificate pages). */
 async function signedPages(input: RenderInputV3, original: Uint8Array): Promise<Uint8Array> {
-  const pdf = await PDFDocument.load(original, { updateMetadata: false });
+  const pdf = await openOriginalV3(original);
   if (!(pdf.catalog instanceof PDFDict)) throw new Error("A PDF without a catalog");
   deterministic(pdf);
   // Clean or not, checked as it arrived: a clean document is drawn as it is; one that isn't gets the best protection
@@ -2390,11 +2400,11 @@ async function signedPages(input: RenderInputV3, original: Uint8Array): Promise<
 }
 
 /**
- * A copy of a document whose pages can't be reproduced (a file that can't be read or decrypted): a first page that
- * says so, and the note, then (for the full copy) the certificate pages. The original is attached to the copy as
- * signed, and the verifier shows it.
+ * A copy of a document whose pages can't be shown (a file that opens only with a password, is encrypted in a way pdf.js
+ * doesn't open, or can't be read): a first page that says so plainly, and that the original is attached exactly as
+ * signed and verifies, then (full) the certificate pages.
  */
-async function unreproducedPages(input: RenderInputV3): Promise<Uint8Array> {
+async function unreproducedPages(input: RenderInputV3, kind: keyof typeof UNREADABLE): Promise<Uint8Array> {
   const pdf = await PDFDocument.create({ updateMetadata: false });
   deterministic(pdf);
   const { agreement: a, details: d } = input;
@@ -2405,15 +2415,24 @@ async function unreproducedPages(input: RenderInputV3): Promise<Uint8Array> {
   const noto = notoFonts(pdf, input);
   const p = pdf.addPage([612, 792]);
   p.drawText("The signed document", { x: 54, y: 700, size: 18, font: textBold, color: NAVY });
+  const why =
+    kind === "password"
+      ? "This document opens only with a password, so its pages can't be shown in this copy."
+      : kind === "unsupported"
+        ? "This document's pages can't be shown in this copy: the file is encrypted in a way PDF readers like pdf.js don't open."
+        : "This document's pages can't be shown in this copy: the file can't be read.";
+  const attached = `The document is attached to this copy exactly as it was signed (original-document.pdf), and it verifies: its fingerprint, ${a.documentSha256}, is the one Attest anchored when the agreement was completed.${kind === "password" ? " Open it with its password to see its pages." : ""}`;
   let y = 670;
-  for (const ln of wrap(`This document's pages couldn't be reproduced in this copy. The document is attached to this copy exactly as it was signed (original-document.pdf, fingerprint ${a.documentSha256}), and Attest's verifier shows exactly what was signed.`, text, 10.5, 504)) {
-    p.drawText(ln, { x: 54, y, size: 10.5, font: text, color: BODY });
-    y -= 15;
+  for (const para of [why, attached]) {
+    for (const ln of wrap(para, text, 10.5, 504)) {
+      p.drawText(ln, { x: 54, y, size: 10.5, font: text, color: BODY });
+      y -= 15;
+    }
+    y -= 6;
   }
   p.drawLine({ start: { x: 24, y: 20 }, end: { x: 612 - 24, y: 20 }, thickness: 0.4, color: HAIR });
   p.drawCircle({ x: 28, y: 11, size: 3, color: ACCENT });
   p.drawText(`Sealed by DataHubz Attest${code ? `  ·  ${fmtCode(code)}` : ""}  ·  verify at ${certUrl}`, { x: 36, y: 8.5, size: 6.5, font: text, color: MUTED });
-  p.drawText(NOT_CLEAN_NOTE, { x: 36, y: 14, size: 5, font: text, color: MUTED });
   const adopted = new Map<string, string>();
   for (const [id, type, , , , , , who] of d.fields) {
     const raw = input.entries[id];
