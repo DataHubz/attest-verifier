@@ -762,7 +762,12 @@ interface ParserInternals {
  */
 export async function openOriginalV3(bytes: Uint8Array): Promise<PDFDocument> {
   const first = await PDFDocument.load(bytes, { updateMetadata: false, ignoreEncryption: true });
-  if (!first.isEncrypted) return first;
+  if (!first.isEncrypted) {
+    // An encryption dictionary that isn't there: pdf.js reads the file as it is (it warns, and decrypts nothing), and
+    // the copy mustn't name it either.
+    first.context.trailerInfo.Encrypt = undefined;
+    return first;
+  }
   const ctx = first.context;
   const encryptRef = ctx.trailerInfo.Encrypt;
   const encrypt = encryptRef instanceof PDFRef ? ctx.lookup(encryptRef) : encryptRef;
