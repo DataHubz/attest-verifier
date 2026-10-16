@@ -12,7 +12,8 @@
 // value the field's font can't encode), the copy draws the value with a font it embeds, and the document is marked as
 // not reproduced exactly. A byte-identical copy lives in DataHubz/attest-verifier (src/renderer/fields-v3.ts).
 //
-// Its code follows pdf.js's (Copyright Mozilla Foundation, Apache License 2.0), rewritten over pdf-lib's objects.
+// Its code follows pdf.js's (Copyright Mozilla Foundation, Apache License 2.0), rewritten over pdf-lib's objects, with
+// no built-in newer than ES2020 (Math.sumPrecise, which pdf.js uses, is summed here), so every engine computes the same.
 import { PDFArray, PDFBool, PDFDict, PDFHexString, PDFName, PDFNumber, PDFRawStream, PDFRef, PDFString, type PDFContext, type PDFDocument, type PDFObject } from "pdf-lib";
 import { stringBytes } from "./decrypt-v3";
 import { BASIC_METRICS, DINGBATS_UNICODE, ENCODINGS, GLYPHS_UNICODE, METRICS, NON_STD_FONT_MAP, SERIF_FONTS, STANDARD_FILE_METRICS, STANDARD_TYPE1_FILES, STD_FONT_MAP, SYMBOLS_FONTS } from "./fonts-data-v3";
@@ -31,7 +32,7 @@ export function numberToString(value: number): string {
   return rounded % 10 === 0 ? value.toFixed(1) : value.toFixed(2);
 }
 /** escapeString (core_utils.js). */
-const escapeString = (str: string) => str.replaceAll(/([()\\\n\r])/g, (m) => (m === "\n" ? "\\n" : m === "\r" ? "\\r" : `\\${m}`));
+const escapeString = (str: string) => str.replace(/([()\\\n\r])/g, (m) => (m === "\n" ? "\\n" : m === "\r" ? "\\r" : `\\${m}`));
 /** escapePDFName (core_utils.js). */
 function escapePDFName(str: string): string {
   const buffer: string[] = [];
@@ -73,7 +74,7 @@ function stringToPDFString(str: string): string {
     if (encoding) {
       try {
         const decoded = new TextDecoder(encoding, { fatal: true }).decode(Uint8Array.from(str, (c) => c.charCodeAt(0) & 0xff));
-        return !decoded.includes("\x1b") ? decoded : decoded.replaceAll(/\x1b[^\x1b]*(?:\x1b|$)/g, "");
+        return !decoded.includes("\x1b") ? decoded : decoded.replace(/\x1b[^\x1b]*(?:\x1b|$)/g, "");
       } catch {
         // pdf.js warns and reads it as PDFDocEncoding.
       }
@@ -127,6 +128,48 @@ function rotationMatrix(rotation: number, width: number, height: number): number
       return [1, 0, 0, 1, 0, 0];
   }
 }
+/**
+ * Math.sumPrecise, as pdf.js sums glyph widths: the exact sum, rounded once (Shewchuk's partials, then a correctly
+ * rounded total, as Python's math.fsum), in plain arithmetic so every engine gets the same number.
+ */
+export function sumPrecise(values: number[]): number {
+  if (values.length === 0) return -0;
+  const partials: number[] = [];
+  for (let x of values) {
+    let i = 0;
+    for (let y of partials) {
+      if (Math.abs(x) < Math.abs(y)) [x, y] = [y, x];
+      const hi = x + y;
+      const lo = y - (hi - x);
+      if (lo !== 0) partials[i++] = lo;
+      x = hi;
+    }
+    partials.length = i;
+    partials.push(x);
+  }
+  let n = partials.length;
+  let hi = 0;
+  if (n > 0) {
+    hi = partials[--n];
+    let lo = 0;
+    while (n > 0) {
+      const x = hi;
+      const y = partials[--n];
+      hi = x + y;
+      const yr = hi - x;
+      lo = y - yr;
+      if (lo !== 0) break;
+    }
+    if (n > 0 && ((lo < 0 && partials[n - 1] < 0) || (lo > 0 && partials[n - 1] > 0))) {
+      const y = lo * 2;
+      const x = hi + y;
+      const yr = x - hi;
+      if (y === yr) hi = x;
+    }
+  }
+  return hi;
+}
+
 /** Whether pdf.js's bidi() finds a string right to left. */
 function isRtl(str: string): boolean {
   let numBidi = 0;
@@ -230,7 +273,7 @@ export function parseDefaultAppearance(da: string): { fontName: string; fontSize
 type XNode = { name: string; value?: string; children: XNode[] | null; parent: XNode | null };
 /** pdf.js's SimpleXMLParser (with its entity rules), keeping only what DatasetReader reads. */
 function parseXml(s: string, stopAt: string | null): XNode | null {
-  const resolve = (t: string) => t.replaceAll(/&(?:#x([^;&]+)|#([^;&]+)|([^;&]+));/g, (all, hex, dec, entity) => {
+  const resolve = (t: string) => t.replace(/&(?:#x([^;&]+)|#([^;&]+)|([^;&]+));/g, (all, hex, dec, entity) => {
     if (hex || dec) {
       const code = hex ? parseInt(hex, 16) : parseInt(dec, 10);
       return code >= 0 && code <= 0x10ffff ? String.fromCodePoint(code) : all;
@@ -254,7 +297,7 @@ function parseXml(s: string, stopAt: string | null): XNode | null {
         if (q < 0) return stopAt ? found : fail();
         const name = s.substring(j, q);
         fragment = stack.pop() || [];
-        const last = fragment.at(-1);
+        const last = fragment[fragment.length - 1];
         if (last) {
           for (const ch of last.children ?? []) ch.parent = last;
           if (stopAt && name === stopAt) return last;
@@ -401,7 +444,7 @@ function datasetReader(pdf: PDFDocument, acroForm: PDFDict, decode: (s: PDFRawSt
       if (i === 0) name = "xdp:xdp";
       else if (i === items.length - 2) name = "/xdp:xdp";
       else {
-        const n = look(items[i]);
+        const n = items[i];
         name = n instanceof PDFString || n instanceof PDFHexString ? latin1(stringBytes(n)) : "";
       }
       if (!entries.has(name)) continue;
@@ -422,6 +465,8 @@ function datasetReader(pdf: PDFDocument, acroForm: PDFDict, decode: (s: PDFRawSt
       return null;
     }
     const node = key === "datasets" ? parseXml(str, null) : parseXml(str, "xfa:datasets");
+    // pdf.js reads a datasets packet's document element, and has no dataset at all when it can't parse one.
+    if (key === "datasets" && !node) return null;
     return (path: string) => {
       if (!node || !path) return "";
       const paths = path.split(".").map((c) => {
@@ -454,7 +499,7 @@ const encoding = (name: string) => {
   if (!e) encodingCache.set(name, (e = ENCODINGS[name].split(" ")));
   return e;
 };
-const normalizeFontName = (name: string) => name.replaceAll(/[,_]/g, "-").replaceAll(/\s/g, "");
+const normalizeFontName = (name: string) => name.replace(/[,_]/g, "-").replace(/\s/g, "");
 const standardFontName = (name: string) => stdFontMap().get(normalizeFontName(name));
 const isSerifFont = (base: string) => {
   const w = base.split("-", 1)[0];
@@ -779,7 +824,7 @@ function loadFont(pdf: PDFDocument, dict: PDFDict, decode: (s: PDFRawStream) => 
           break;
         case "u": { const u = unicodeForGlyph(g); if (u !== -1) c = u; break; }
         default:
-          if (g === "f_h" || g === "f_t" || g === "T_h") { map.set(code, g.replaceAll("_", "")); continue; }
+          if (g === "f_h" || g === "f_t" || g === "T_h") { map.set(code, g.replace(/_/g, "")); continue; }
       }
       if (c > 0 && c <= 0x10ffff && Number.isInteger(c)) {
         if (baseEncodingName && c === code) {
@@ -878,13 +923,15 @@ function loadFont(pdf: PDFDocument, dict: PDFDict, decode: (s: PDFRawStream) => 
       const m = trueTypeMetrics(file);
       if (m) [asc, desc] = m;
       else { exact = false; fallbackMetrics(); }
-    } else if (isOtto) {
-      // An OpenType CFF font is converted without its hhea metrics: the descriptor's stay.
-    } else if (isT1 || isCff) {
-      // Type1 and CFF fonts keep the descriptor's.
-    } else if (latin1(file.subarray(0, 4)) === "ttcf") exact = false;
-    else if (type === "TrueType") fallbackMetrics();
-    else exact = false;
+    } else if (isOtto || isT1 || isCff) {
+      // Converted with the descriptor's ascent and descent, but with the font program's own FontMatrix (widths scaled
+      // by it) and built-in encoding (codes mapped by it), which aren't read here.
+      exact = false;
+    } else {
+      // A collection, or a file pdf.js may not read (it then draws with its fallback for the font's name).
+      exact = false;
+      fallbackMetrics();
+    }
   } else fallbackMetrics();
   return {
     error: false,
@@ -1093,7 +1140,7 @@ export function fieldDrawing(pdf: PDFDocument, dict: PDFDict, env: FieldEnv): Fi
   const acroRes = env.acroForm ? look(env.acroForm.get(PDFName.of("DR"))) : undefined;
   const apRes = appearance ? look(appearance.dict.get(PDFName.of("Resources"))) : undefined;
   const merged = mergeResources(ctx, [localResources, apRes, acroRes]);
-  const password = ft === "Tx" && has(14);
+  const password = has(14);
   let value: string;
   let combo = false, options: { exportValue: string | null; displayValue: string | null }[] = [];
   if (ft === "Tx") {
@@ -1126,6 +1173,7 @@ export function fieldDrawing(pdf: PDFDocument, dict: PDFDict, env: FieldEnv): Fi
     const fvArr = fieldValue as (string | null)[];
     if (options.length === 0 && fvArr.length > 0) options = fvArr.map((v) => ({ exportValue: v, displayValue: v }));
     combo = has(18);
+    if (combo && password) return stored();
     if (!combo) return listBoxDrawing(pdf, env, dict, appearance, options, fvArr, da, daData, merged, rotation, width, height);
   }
   // WidgetAnnotation._getAppearance.
@@ -1173,12 +1221,10 @@ export function fieldDrawing(pdf: PDFDocument, dict: PDFDict, env: FieldEnv): Fi
     if (e.length > 1) encodingError = true;
     encodedLines.push(e.join(""));
   }
-  const textWidth = (text: string) => {
-    let w = 0;
-    if (font.error) return 0;
-    for (const [code] of codesOf(font, text)) w += font.width(code);
-    return w / 1000;
-  };
+  // _getTextWidth: the glyphs' widths summed exactly (an error font has none).
+  const textWidth = (text: string) => sumPrecise(font.error ? [] : codesOf(font, text).map(([code]) => font.width(code))) / 1000;
+  // pdf.js draws nothing with a font it can't load (its ErrorFont), only the field's colours.
+  if (font.error) return generated(colourOnly);
   if (encodingError) {
     // pdf.js draws these with a font of the browser's own (FakeUnicodeFont): the copy draws the value with Noto Sans.
     return { kind: "generated", content: "", resources: merged, matrix: rotationMatrix(rotation, width, height), width, height, fallbackFont, exact: false, unencodable: { lines, fontSize: daData.fontSize, alignment: alignment ?? 0, multiline: multiLine, comb } };
@@ -1384,11 +1430,10 @@ function listBoxDrawing(pdf: PDFDocument, env: FieldEnv, dict: PDFDict, appearan
   const { font, fallbackFont } = fieldFont(pdf, env, daData.fontName, merged);
   const textWidth = (text: string | null) => {
     if (text === null) throw new Error("no text");
-    let w = 0;
-    if (font.error) return 0;
-    for (const [code] of codesOf(font, text)) w += font.width(code);
-    return w / 1000;
+    return sumPrecise(font.error ? [] : codesOf(font, text).map(([code]) => font.width(code))) / 1000;
   };
+  // pdf.js draws nothing with a font it can't load (its ErrorFont).
+  if (font.error) return { kind: "none" };
   try {
     let defaultAppearance = da;
     let fontSize = daData.fontSize;
