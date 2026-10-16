@@ -2,7 +2,7 @@
   "version": "1.6.0",
   "released": "2026-10-16",
   "formats": { "agreement": [1, 2, 3, 4, 5, 6], "receipt": [1, 2], "certificate": [1, 2], "card": [1, 2], "proof": [1, 2], "analytics": [1, 2] },
-  "sha256": "83e7540b4c7ef091030deb00a22212029f00486353743f1b88e5096c2767463c",
+  "sha256": "073b012a32584a080af5a463c998d7f05da7a6c48ef05b1d90fb1968a803f41a",
   "url": "https://attest.datahubz.com/attest-verifier/1.6.0.html",
   "source": "https://github.com/DataHubz/attest-verifier/releases/tag/v1.6.0"
 }
