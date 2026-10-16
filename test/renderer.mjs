@@ -5,7 +5,8 @@
 // into the labels above them and sit on their lines, a field of every size the composer makes and smaller, turned,
 // cropped and offset pages, pages whose content tries to change what follows it or leaves a text object, path, clip,
 // marked content or compatibility section open, content in every filter and predictor pdf.js decodes, annotations of
-// every kind (drawn as pdf.js prints them, or not), and documents the renderer must refuse.
+// every kind (drawn as pdf.js prints them, or not), form fields whose appearance pdf.js generates (drawn as pdf.js draws
+// them), encrypted documents, and files that can't be read or decrypted, each given a copy.
 import { build } from "esbuild";
 import { readFileSync, rmSync } from "node:fs";
 import { createHash } from "node:crypto";
