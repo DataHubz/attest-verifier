@@ -37,14 +37,15 @@ for (const [version, dir] of [["v2", "test/renderer"], ["v3", "test/renderer/v3"
   const expected = JSON.parse(readFileSync(`${dir}/expected.json`, "utf8"));
   let bad = 0;
   // The detector itself: the hostile original carries active content of every kind it looks for.
-  const hostile = cases.find((c) => c.name === "hostile-full");
+  // (Renderer v3 refuses that document, which also has form fields and annotations, so its case is a refused one there.)
+  const hostile = cases.find((c) => c.name === "hostile-full" || c.name === "refused-hostile-full");
   const found = new Set(activeContent(await PDFDocument.load(Buffer.from(hostile.input.original, "base64"))));
   if (found.size < 8) { bad++; console.log(`FAIL ${version}: the detector finds only ${[...found].join(", ")} in the hostile original`); }
   for (const c of cases) {
     const own = { sans: new Uint8Array(fonts.sans), bold: new Uint8Array(fonts.bold), mono: new Uint8Array(fonts.mono), ...(version === "v3" ? { noto: new Uint8Array(fonts.noto), notoBold: new Uint8Array(fonts.notoBold) } : {}) };
     const input = { ...c.input, original: c.input.original === null ? null : new Uint8Array(Buffer.from(c.input.original, "base64")), fonts: own };
-    // A document renderer v3 can't vouch for (content it can't read as every reader does, an annotation whose look a
-    // reader would make up): Attest refuses it before anyone signs, and the renderer throws on it.
+    // A document renderer v3 can't prove every reader shows the same way: Attest's composer refuses it when it's
+    // attached and each signer's page before that signer signs, and the renderer throws on it.
     if (expected[c.name] === "refused") {
       let threw = false;
       try { await render(input); } catch (e) { threw = String(e?.message ?? "").startsWith("Renderer v3 can't make a copy"); }
