@@ -278,7 +278,8 @@ function dropUnreachable(pdf: PDFDocument) {
 //   each with its operands. Every stream is balanced on its own: saves and restores (q/Q), text objects (BT/ET), marked
 //   content (BMC/BDC/EMC), compatibility sections (BX/EX); every path is painted (or used as a clip and painted) before
 //   anything else, and none is left open. A text object holds only what ISO 32000-1 allows in one. Type 3 glyphs start
-//   with d0 or d1, and only they use them. A page's content split across streams is split between tokens, at white
+//   with d0 or d1, and only they use them. Text is filled, invisible or added to the clip, never stroked (readers
+//   take a text stroke's width differently). A page's content split across streams is split between tokens, at white
 //   space. Inline images only unfiltered, exactly their declared size, with no "EI" in their data.
 // - Resources: everything content names is there; forms and patterns are checked the same way; no PostScript XObject,
 //   no form that draws itself; graphics states without transfer functions, halftones, black generation, undercolour
@@ -432,7 +433,7 @@ export interface ContentUses {
   Properties: string[];
 }
 
-type Operand = { k: "n" } | { k: "N"; v: string } | { k: "s" } | { k: "a"; items: Operand[] } | { k: "D" } | { k: "b" };
+type Operand = { k: "n"; v?: number } | { k: "N"; v: string } | { k: "s" } | { k: "a"; items: Operand[] } | { k: "D" } | { k: "b" };
 
 /**
  * Checks one content stream against v3's grammar, operators and balance: the first reason it isn't accepted (null when
@@ -535,7 +536,7 @@ export function checkContent(b: Uint8Array, opts: { glyph?: boolean; parts?: num
     if (i < b.length && !WHITE(b[i]) && !DELIM(b[i])) return out("bytes outside text");
     if (!between(start, i)) return out("content split across streams where readers join them differently");
     const word = String.fromCharCode(...b.subarray(start, i));
-    if (NUMBER.test(word)) { push({ k: "n" }); continue; }
+    if (NUMBER.test(word)) { push({ k: "n", v: Number(word) }); continue; }
     if (/^[+\-.0-9]/.test(word)) return out("a malformed number");
     if (word === "true" || word === "false") { push({ k: "b" }); continue; }
     if (word === "null") { push({ k: "b" }); continue; }
@@ -550,6 +551,12 @@ export function checkContent(b: Uint8Array, opts: { glyph?: boolean; parts?: num
     if (!fits) return out(`an operator with the wrong operands (${word})`);
     if (word === "TJ" && (operands[0] as { items: Operand[] }).items.some((o) => o.k !== "n" && o.k !== "s")) return out("an operator with the wrong operands (TJ)");
     if (word === "d" && (operands[0] as { items: Operand[] }).items.some((o) => o.k !== "n")) return out("an operator with the wrong operands (d)");
+    // Text filled, invisible or added to the clip; never stroked: readers take a text stroke's width differently.
+    if (word === "Tr") {
+      const mode = (operands[0] as { v?: number }).v ?? NaN;
+      if (!Number.isInteger(mode) || mode < 0 || mode > 7) return out("an operator with the wrong operands (Tr)");
+      if (mode === 1 || mode === 2 || mode === 5 || mode === 6) return out("text drawn with a stroke (Tr)");
+    }
     // Type 3 glyphs: d0 or d1 first, and only there; an uncoloured glyph (d1) sets no colour.
     if (word === "d0" || word === "d1") {
       if (!opts.glyph || !first) return out("a glyph operator outside the start of a Type 3 glyph");
