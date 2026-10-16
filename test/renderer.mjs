@@ -7,6 +7,8 @@
 // marked content or compatibility section open, content in every filter and predictor pdf.js decodes, annotations of
 // every kind (drawn as pdf.js prints them, or not), form fields whose appearance pdf.js generates (drawn as pdf.js draws
 // them), encrypted documents, and files that can't be read or decrypted, each given a copy.
+// Renderer v3's cases are rendered again with every built-in newer than ES2020 removed and a wrong Math.sumPrecise
+// installed: the same bytes, so a browser without them re-makes the same copy.
 import { build } from "esbuild";
 import { readFileSync, rmSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -53,6 +55,38 @@ for (const [version, dir] of [["v2", "test/renderer"], ["v3", "test/renderer/v3"
   }
   console.log(`renderer ${version}: ${cases.length - bad}/${cases.length} byte for byte`);
   failed += bad;
+  total += cases.length;
+  if (version !== "v3") continue;
+  // The same bytes in an older engine: every case again, with every built-in newer than ES2020 removed and
+  // Math.sumPrecise present but wrong (renderer v3 sums glyph widths itself, as pdf.js's Math.sumPrecise does).
+  const typed = Object.getPrototypeOf(Uint8Array.prototype);
+  const recent = [
+    [Math, "sumPrecise"], [Math, "f16round"], [String.prototype, "replaceAll"], [String.prototype, "at"], [String.prototype, "isWellFormed"], [String.prototype, "toWellFormed"],
+    ...["at", "findLast", "findLastIndex", "toSorted", "toReversed", "toSpliced", "with"].map((k) => [Array.prototype, k]),
+    ...["at", "findLast", "findLastIndex", "toSorted", "toReversed", "with"].map((k) => [typed, k]),
+    [Uint8Array, "fromBase64"], [Uint8Array, "fromHex"], [Uint8Array.prototype, "toBase64"], [Uint8Array.prototype, "toHex"], [Uint8Array.prototype, "setFromBase64"], [Uint8Array.prototype, "setFromHex"],
+    [Object, "hasOwn"], [Object, "groupBy"], [Map, "groupBy"], [Promise, "withResolvers"], [Promise, "try"], [Array, "fromAsync"], [globalThis, "structuredClone"], [RegExp, "escape"], [Error, "isError"],
+    ...["union", "intersection", "difference", "symmetricDifference", "isSubsetOf", "isSupersetOf", "isDisjointFrom"].map((k) => [Set.prototype, k]),
+    ...(globalThis.Iterator ? ["map", "filter", "take", "drop", "flatMap", "reduce", "toArray", "forEach", "some", "every", "find"].map((k) => [globalThis.Iterator.prototype, k]) : []),
+  ];
+  const saved = recent.filter(([o, k]) => Object.prototype.hasOwnProperty.call(o, k)).map(([o, k]) => [o, k, Object.getOwnPropertyDescriptor(o, k)]);
+  for (const [o, k] of saved) delete o[k];
+  Object.defineProperty(Math, "sumPrecise", { value: () => 1234.5, configurable: true, writable: true });
+  let old = 0;
+  try {
+    for (const c of cases) {
+      const own = { sans: new Uint8Array(fonts.sans), bold: new Uint8Array(fonts.bold), mono: new Uint8Array(fonts.mono), noto: new Uint8Array(fonts.noto), notoBold: new Uint8Array(fonts.notoBold) };
+      const input = { ...c.input, original: c.input.original === null ? null : new Uint8Array(Buffer.from(c.input.original, "base64")), fonts: own };
+      let h;
+      try { h = createHash("sha256").update(await render(input)).digest("hex"); } catch (e) { h = String(e); }
+      if (h !== expected[c.name]) { old++; console.log(`FAIL v3 ${c.name} without recent built-ins: ${h.slice(0, 120)}, expected ${expected[c.name]}`); }
+    }
+  } finally {
+    delete Math.sumPrecise;
+    for (const [o, k, d] of saved) Object.defineProperty(o, k, d);
+  }
+  console.log(`renderer v3 without the ${saved.length} built-ins newer than ES2020 this engine has, and a wrong Math.sumPrecise: ${cases.length - old}/${cases.length} byte for byte`);
+  failed += old;
   total += cases.length;
 }
 process.exit(failed || pinned ? 1 : 0);
