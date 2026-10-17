@@ -1,19 +1,12 @@
-// Renderer v3: opening an encrypted document exactly as pdf.js opens it for the signer.
-//
-// pdf.js opens a document encrypted with the standard security handler without asking for a password when its user
-// password is empty (an owner password only, as government forms are protected): RC4 40 to 128 bits (V 1 and 2), RC4
-// or AES-128 through crypt filters (V 4), and AES-256 (V 5, revisions 5 and 6). It decrypts every string and stream of
-// every object it reads from the file, and nothing inside an object stream (the stream itself is decrypted). This file
-// does the same, with pdf.js's own rules (CipherTransformFactory, CipherTransform, DecryptStream and the AES and RC4
-// ciphers in pdf.js's crypto.js, which it follows step for step, including how pdf.js reads a string's bytes, removes
-// AES padding and feeds a stream to its cipher 512 bytes at a time), and gives renderer v3 the decrypted document. A
-// document pdf.js opens only with a password, or doesn't open at all, can't be decrypted here either.
-// Its code follows pdf.js's (Copyright Mozilla Foundation, Apache License 2.0), rewritten over pdf-lib's objects.
+// Renderer v3: the digests and ciphers pdf.js decrypts documents with (MD5, SHA-256/384/512, RC4 and AES, as in
+// pdf.js's crypto.js), how pdf.js reads a string's bytes, and the error for a document pdf.js can't show. The standard
+// security handler itself (CipherTransformFactory), and decrypting each object as it's read, are in pdfjs-v3.ts.
+// Its code follows pdf.js's (Copyright Mozilla Foundation, Apache License 2.0).
 //
 // Everything is plain JavaScript (no WebCrypto, no Math functions whose results engines may round differently), so the
 // app, the open verifier and every browser decrypt a document to the same bytes. A byte-identical copy lives in
 // DataHubz/attest-verifier (src/renderer/decrypt-v3.ts).
-import { PDFArray, PDFBool, PDFDict, PDFDocument, PDFHexString, PDFName, PDFNumber, PDFParser, PDFRawStream, PDFRef, PDFString, ParseSpeeds, type PDFContext, type PDFObject } from "pdf-lib";
+import { PDFHexString, type PDFString } from "pdf-lib";
 
 // ---- Digests -------------------------------------------------------------------------------------------------------
 
@@ -362,6 +355,21 @@ const aesKey = (key: Uint8Array, bytes: 16 | 32) => {
   return k;
 };
 
+/** AES-CBC decryption of whole blocks after an IV, with no padding removed (a 16- or 32-byte key, zeros after a shorter one). */
+export function aesCbcDecryptBlocks(key: Uint8Array, size: 16 | 32, data: Uint8Array, iv: Uint8Array): Uint8Array {
+  const aes = new Aes(aesKey(key, size));
+  const blocks = Math.floor(data.length / 16);
+  const out = new Uint8Array(blocks * 16);
+  let prev = iv;
+  for (let b = 0; b < blocks; b++) {
+    const c = data.slice(16 * b, 16 * b + 16);
+    const x = aes.decrypt(c);
+    for (let i = 0; i < 16; i++) out[16 * b + i] = x[i] ^ prev[i];
+    prev = c;
+  }
+  return out;
+}
+
 /** AES-CBC encryption without padding, as pdf.js's AESBaseCipher.encrypt: whole blocks only. */
 export function aesCbcEncrypt(key: Uint8Array, iv: Uint8Array, data: Uint8Array): Uint8Array {
   const aes = new Aes(aesKey(key, key.length > 16 ? 32 : 16));
@@ -375,61 +383,6 @@ export function aesCbcEncrypt(key: Uint8Array, iv: Uint8Array, data: Uint8Array)
     out.set(prev, 16 * b);
   }
   return out;
-}
-
-/**
- * AES-CBC decryption as pdf.js does it (AESBaseCipher.decryptBlock): the first 16 bytes are the IV (nothing comes out
- * of less); a partial last block is dropped; and the padding of the last block the final call decrypts is removed when
- * every padding byte is right. A stream is fed to it as pdf.js's DecryptStream feeds it, 512 bytes at a time, so a
- * stream whose last piece holds no whole block keeps the padding of the block before; a string comes in one piece.
- * The key's length picks AES-128 (16 bytes) or AES-256 (32 bytes).
- */
-export function aesDecryptLikePdfjs(key: Uint8Array, data: Uint8Array, stream: boolean): Uint8Array {
-  const aes = new Aes(key);
-  const pieces: Uint8Array[] = [];
-  if (stream) for (let at = 0; at < data.length; at += 512) pieces.push(data.subarray(at, at + 512));
-  else pieces.push(data);
-  const out: Uint8Array[] = [];
-  let iv: Uint8Array | null = null;
-  for (const [k, piece] of pieces.entries()) {
-    let p = piece;
-    if (!iv) {
-      if (p.length < 16) continue;
-      iv = p.slice(0, 16);
-      p = p.subarray(16);
-    }
-    const blocks = Math.floor(p.length / 16);
-    if (!blocks) continue;
-    const res = new Uint8Array(blocks * 16);
-    for (let b = 0; b < blocks; b++) {
-      const c = p.slice(16 * b, 16 * b + 16);
-      const x = aes.decrypt(c);
-      for (let i = 0; i < 16; i++) res[16 * b + i] = x[i] ^ iv[i];
-      iv = c;
-    }
-    let len = res.length;
-    if (k === pieces.length - 1) {
-      let pad = res[len - 1];
-      if (pad <= 16) {
-        for (let i = 15; i >= 16 - pad; i--) {
-          if (res[len - 16 + i] !== pad) {
-            pad = 0;
-            break;
-          }
-        }
-        len -= pad;
-      }
-    }
-    out.push(res.subarray(0, len));
-  }
-  const total = out.reduce((n, x) => n + x.length, 0);
-  const all = new Uint8Array(total);
-  let at = 0;
-  for (const x of out) {
-    all.set(x, at);
-    at += x.length;
-  }
-  return all;
 }
 
 // ---- Strings as pdf.js reads them ----------------------------------------------------------------------------------
@@ -485,357 +438,11 @@ function hexBytes(raw: string): Uint8Array {
 export function stringBytes(s: PDFString | PDFHexString): Uint8Array {
   return s instanceof PDFHexString ? hexBytes(s.asString()) : literalBytes(s.asString());
 }
-/** The same kind of string, holding these bytes (a literal one with every byte that needs it escaped). */
-function stringOf(kind: PDFString | PDFHexString, bytes: Uint8Array): PDFString | PDFHexString {
-  if (kind instanceof PDFHexString) {
-    let hex = "";
-    for (const b of bytes) hex += (b < 16 ? "0" : "") + b.toString(16).toUpperCase();
-    return PDFHexString.of(hex);
-  }
-  let text = "";
-  for (const b of bytes) {
-    if (b === 0x28 || b === 0x29 || b === 0x5c) text += "\\" + String.fromCharCode(b);
-    else if (b < 0x20 || b > 0x7e) text += "\\" + b.toString(8).padStart(3, "0");
-    else text += String.fromCharCode(b);
-  }
-  return PDFString.of(text);
-}
-
-// ---- The standard security handler, as pdf.js reads it ---------------------------------------------------------------
+// ---- Documents pdf.js can't open ------------------------------------------------------------------------------
 
 /** Why a document can't be opened: it needs a password, its encryption is one pdf.js doesn't open, or the file can't be read. */
 export class UnreadablePdf extends Error {
   constructor(readonly kind: "password" | "unsupported" | "damaged") {
     super(kind === "password" ? "A PDF that opens only with a password" : kind === "unsupported" ? "A PDF encrypted in a way pdf.js doesn't open" : "A PDF that can't be read");
   }
-}
-
-/** The 32 bytes that pad a password (ISO 32000, 7.6.4.3). */
-const PAD = Uint8Array.from([0x28, 0xbf, 0x4e, 0x5e, 0x4e, 0x75, 0x8a, 0x41, 0x64, 0x00, 0x4e, 0x56, 0xff, 0xfa, 0x01, 0x08, 0x2e, 0x2e, 0x00, 0xb6, 0xd0, 0x68, 0x3e, 0x80, 0x2f, 0x0c, 0xa9, 0xfe, 0x64, 0x53, 0x69, 0x7a]);
-const concat = (...parts: (Uint8Array | number[])[]) => {
-  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
-  let at = 0;
-  for (const p of parts) {
-    out.set(p, at);
-    at += p.length;
-  }
-  return out;
-};
-/** pdf.js reads `length` bytes from `data`, as zeros past its end. */
-const firstBytes = (data: Uint8Array, length: number) => {
-  const out = new Uint8Array(length);
-  out.set(data.subarray(0, length));
-  return out;
-};
-
-/** The file key of an RC4 or AES-128 document with an empty user password (pdf.js's #prepareKeyData), or null. */
-function keyFromEmptyPassword(fileId: Uint8Array, owner: Uint8Array, user: Uint8Array, flags: number, revision: number | undefined, keyLength: number, encryptMetadata: boolean): Uint8Array | null {
-  const r = revision ?? 0;
-  const parts: (Uint8Array | number[])[] = [PAD, owner, [flags & 0xff, (flags >> 8) & 0xff, (flags >> 16) & 0xff, (flags >>> 24) & 0xff], fileId];
-  if (r >= 4 && !encryptMetadata) parts.push([0xff, 0xff, 0xff, 0xff]);
-  let hash = md5(concat(...parts));
-  const bytes = keyLength >> 3;
-  if (r >= 3) for (let j = 0; j < 50; j++) hash = md5(firstBytes(hash, bytes));
-  const key = hash.subarray(0, bytes);
-  let check: Uint8Array;
-  if (r >= 3) {
-    check = rc4(key, md5(concat(PAD, fileId)));
-    const derived = new Uint8Array(key.length);
-    for (let j = 1; j <= 19; j++) {
-      for (let k = 0; k < key.length; k++) derived[k] = key[k] ^ j;
-      check = rc4(derived, check);
-    }
-  } else check = rc4(key, PAD);
-  return check.every((b, k) => user[k] === b) ? key : null;
-}
-
-/** The hash of revisions 5 (SHA-256) and 6 (ISO 32000-2's iterated hash), as pdf.js's PDF17 and PDF20 compute it. */
-function hash2(revision6: boolean, password: Uint8Array, input: Uint8Array, userBytes: Uint8Array): Uint8Array {
-  if (!revision6) return sha256(input);
-  let k = sha256(input);
-  let e: Uint8Array = Uint8Array.from([0]);
-  for (let i = 0; i < 64 || e[e.length - 1] > i - 32; i++) {
-    const once = concat(password, k, userBytes);
-    const k1 = new Uint8Array(once.length * 64);
-    for (let j = 0; j < 64; j++) k1.set(once, j * once.length);
-    e = aesCbcEncrypt(k.subarray(0, 16), k.subarray(16, 32), k1);
-    let sum = 0;
-    for (let j = 0; j < 16; j++) sum += e[j];
-    const pick = sum % 3;
-    k = pick === 0 ? sha256(e) : pick === 1 ? sha384(e) : sha512(e);
-  }
-  return k.subarray(0, 32);
-}
-
-/** The file key of an AES-256 document with an empty user password (pdf.js's #createEncryptionKey20), or null. */
-function keyFromEmptyPassword20(revision: number | undefined, user: Uint8Array, userEncryption: Uint8Array): Uint8Array | null {
-  const r6 = revision === 6;
-  const empty = new Uint8Array(0);
-  const check = hash2(r6, empty, user.subarray(32, 40), empty);
-  const stored = user.subarray(0, 32);
-  if (check.length !== stored.length || !check.every((b, i) => b === stored[i])) return null;
-  const k = hash2(r6, empty, user.subarray(40, 48), empty);
-  // AES-256 decryption of UE with a zero IV and no padding removed.
-  const aes = new Aes(aesKey(k, 32));
-  const blocks = Math.floor(userEncryption.length / 16);
-  const out = new Uint8Array(blocks * 16);
-  let iv = new Uint8Array(16);
-  for (let b = 0; b < blocks; b++) {
-    const c = userEncryption.slice(16 * b, 16 * b + 16);
-    const x = aes.decrypt(c);
-    for (let i = 0; i < 16; i++) out[16 * b + i] = x[i] ^ iv[i];
-    iv = c;
-  }
-  return out;
-}
-
-type Cipher = ((data: Uint8Array, stream: boolean) => Uint8Array) | null;
-
-/** What decrypts each object's strings and streams, as pdf.js's CipherTransform does for that object. */
-interface Decryption {
-  /** The cipher for a crypt filter name (null: the default for strings or streams), for the object numbered num, gen. */
-  cipher(kind: "string" | "stream" | "embedded" | { name: string }, num: number, gen: number): Cipher;
-}
-
-/** The standard security handler with an empty user password, as pdf.js's CipherTransformFactory reads it. */
-function standardHandler(pdf: PDFContext, dict: PDFDict, fileId: Uint8Array): Decryption {
-  const look = (v: unknown) => (v instanceof PDFRef ? pdf.lookup(v) : v);
-  const get = (d: PDFDict, key: string) => look(d.get(PDFName.of(key)));
-  const num = (v: unknown) => (v instanceof PDFNumber ? v.asNumber() : undefined);
-  const nameOf = (v: unknown) => (v instanceof PDFName ? v.decodeText() : undefined);
-  const str = (v: unknown) => (v instanceof PDFString || v instanceof PDFHexString ? stringBytes(v) : undefined);
-  if (nameOf(get(dict, "Filter")) !== "Standard") throw new UnreadablePdf("unsupported");
-  const v = num(get(dict, "V"));
-  if (v === undefined || !Number.isInteger(v) || ![1, 2, 4, 5].includes(v)) throw new UnreadablePdf("unsupported");
-  const cf = v >= 4 ? get(dict, "CF") : undefined;
-  let keyLength = num(get(dict, "Length"));
-  if (!keyLength) {
-    if (v <= 3) keyLength = 40;
-    else {
-      const stm = nameOf(get(dict, "StmF"));
-      if (cf instanceof PDFDict && stm !== undefined) {
-        const handler = look(cf.get(PDFName.of(stm)));
-        keyLength = (handler instanceof PDFDict ? num(get(handler, "Length")) : undefined) || 128;
-        if (keyLength < 40) keyLength <<= 3;
-      }
-    }
-  }
-  if (keyLength === undefined || !Number.isInteger(keyLength) || keyLength < 40 || keyLength % 8 !== 0) throw new UnreadablePdf("unsupported");
-  // Crypt filter names: Identity unless the dictionary names one.
-  const filterName = (key: string, dflt: string) => {
-    const x = get(dict, key);
-    if (x === undefined) return dflt;
-    const n = nameOf(x);
-    if (n === undefined) throw new UnreadablePdf("unsupported");
-    return n;
-  };
-  const stmf = v >= 4 ? filterName("StmF", "Identity") : "Identity";
-  const strf = v >= 4 ? filterName("StrF", "Identity") : "Identity";
-  const eff = v >= 4 ? filterName("EFF", stmf) : stmf;
-  if (v >= 4 && !(cf instanceof PDFDict)) throw new UnreadablePdf("unsupported");
-  const ownerBytes = str(get(dict, "O")), userBytes = str(get(dict, "U"));
-  if (!ownerBytes || !userBytes) throw new UnreadablePdf("unsupported");
-  const owner = ownerBytes.subarray(0, 32), user = userBytes.subarray(0, 32);
-  const p = get(dict, "P");
-  const flags = p instanceof PDFNumber ? p.asNumber() : 0;
-  const revision = num(get(dict, "R"));
-  const em = get(dict, "EncryptMetadata");
-  const encryptMetadata = (v === 4 || v === 5) && !(em instanceof PDFBool && !em.asBoolean());
-  let key: Uint8Array | null;
-  if (v !== 5) key = keyFromEmptyPassword(fileId, owner, user, flags, revision, keyLength, encryptMetadata);
-  else {
-    const ue = str(get(dict, "UE"));
-    if (!ue) throw new UnreadablePdf("unsupported");
-    key = keyFromEmptyPassword20(revision, userBytes.subarray(0, 48), ue);
-  }
-  if (!key) {
-    // Only embedded files are encrypted, and they open with a password: everything else reads as it is.
-    const effFilter = cf instanceof PDFDict ? look(cf.get(PDFName.of(eff))) : undefined;
-    if (!(v >= 4 && stmf === "Identity" && strf === "Identity" && effFilter instanceof PDFDict && nameOf(get(effFilter, "AuthEvent")) === "EFOpen")) throw new UnreadablePdf("password");
-  } else if (v === 4 && key.length < 16) key = firstBytes(key, 16);
-  const fileKey = key;
-  /** The object's own key (pdf.js's #buildObjectKey). */
-  const objectKey = (n: number, g: number, aes: boolean) => {
-    if (!fileKey) return null;
-    const parts: (Uint8Array | number[])[] = [fileKey, [n & 0xff, (n >> 8) & 0xff, (n >> 16) & 0xff, g & 0xff, (g >> 8) & 0xff]];
-    if (aes) parts.push([0x73, 0x41, 0x6c, 0x54]);
-    return md5(concat(...parts)).subarray(0, Math.min(fileKey.length + 5, 16));
-  };
-  const resolve = (name: string, n: number, g: number): Cipher => {
-    if (v < 4) {
-      const k = objectKey(n, g, false);
-      return k ? (data) => rc4(k, data) : null;
-    }
-    const filter = cf instanceof PDFDict ? look(cf.get(PDFName.of(name))) : undefined;
-    const cfm = filter instanceof PDFDict ? nameOf(get(filter, "CFM")) : undefined;
-    if (!cfm || cfm === "None") return (data) => data;
-    if (!fileKey) return null;
-    if (v === 5 || cfm === "AESV3") {
-      const k = aesKey(fileKey, 32);
-      return (data, stream) => aesDecryptLikePdfjs(k, data, stream);
-    }
-    if (cfm === "V2") {
-      const k = objectKey(n, g, false)!;
-      return (data) => rc4(k, data);
-    }
-    if (cfm === "AESV2") {
-      const k = aesKey(objectKey(n, g, true)!, 16);
-      return (data, stream) => aesDecryptLikePdfjs(k, data, stream);
-    }
-    return null;
-  };
-  // A crypt method pdf.js doesn't know, for strings or streams: it can't read any object.
-  for (const name of [stmf, strf]) {
-    const filter = cf instanceof PDFDict ? look(cf.get(PDFName.of(name))) : undefined;
-    const cfm = filter instanceof PDFDict ? nameOf(get(filter, "CFM")) : undefined;
-    if (v >= 4 && cfm && !["None", "V2", "AESV2", "AESV3"].includes(cfm)) throw new UnreadablePdf("unsupported");
-  }
-  return {
-    cipher(kind, n, g) {
-      const name = typeof kind === "object" ? kind.name : kind === "string" ? strf : kind === "embedded" ? eff : stmf;
-      return resolve(name, n, g);
-    },
-  };
-}
-
-// ---- Decrypting a document as it's read ------------------------------------------------------------------------------
-
-/** Every string in an object, decrypted in place (a dictionary's or array's values), or the string itself decrypted. */
-function decryptStrings(o: PDFObject, cipher: Cipher): PDFObject {
-  if (!cipher) return o;
-  if (o instanceof PDFString || o instanceof PDFHexString) return stringOf(o, cipher(stringBytes(o), false));
-  if (o instanceof PDFDict) {
-    for (const [k, x] of o.entries()) {
-      const d = decryptStrings(x, cipher);
-      if (d !== x) o.set(k, d);
-    }
-  } else if (o instanceof PDFArray) {
-    for (let i = 0; i < o.size(); i++) {
-      const x = o.get(i);
-      const d = decryptStrings(x, cipher);
-      if (d !== x) o.set(i, d);
-    }
-  }
-  return o;
-}
-
-/** A stream's bytes decrypted as pdf.js decrypts them: by its crypt filter if it names one first, else the default for streams (or embedded files). */
-function decryptStream(s: PDFRawStream, d: Decryption, n: number, g: number): PDFRawStream {
-  const dict = s.dict;
-  const filterValue = dict.get(PDFName.of("Filter"));
-  const filters = filterValue instanceof PDFArray ? filterValue.asArray() : filterValue === undefined ? [] : [filterValue];
-  const crypt = filters.findIndex((f) => f instanceof PDFName && f.decodeText() === "Crypt");
-  let cipher: Cipher;
-  if (crypt < 0) {
-    const type = dict.get(PDFName.of("Type"));
-    cipher = d.cipher(type instanceof PDFName && type.decodeText() === "EmbeddedFile" ? "embedded" : "stream", n, g);
-    return cipher ? PDFRawStream.of(dict, cipher(s.contents, true)) : s;
-  }
-  // A crypt filter: pdf.js decrypts with the one it names (Identity by default), in its place among the filters. Only
-  // first is it the stream's own bytes it decrypts: elsewhere the stream is kept as it is.
-  if (crypt > 0) return s;
-  const parmsValue = dict.get(PDFName.of("DecodeParms"));
-  const parms = parmsValue instanceof PDFArray ? parmsValue.get(0) : parmsValue;
-  const nameValue = parms instanceof PDFDict ? parms.get(PDFName.of("Name")) : undefined;
-  cipher = d.cipher({ name: nameValue instanceof PDFName ? nameValue.decodeText() : "Identity" }, n, g);
-  if (!cipher) return s;
-  const out = PDFRawStream.of(dict, cipher(s.contents, true));
-  if (filterValue instanceof PDFArray && filterValue.size() > 1) {
-    filterValue.remove(0);
-    if (parmsValue instanceof PDFArray && parmsValue.size() > 0) parmsValue.remove(0);
-  } else {
-    dict.delete(PDFName.of("Filter"));
-    dict.delete(PDFName.of("DecodeParms"));
-  }
-  return out;
-}
-
-interface ParserInternals {
-  parseIndirectObjectHeader(): PDFRef;
-  parseIndirectObject(): Promise<PDFRef>;
-  parseObject(): PDFObject;
-  parseDocument(): Promise<PDFContext>;
-}
-
-/**
- * The document, decrypted if it's encrypted, as pdf.js opens it for the signer. Throws UnreadablePdf when pdf.js would
- * need a password or doesn't open its encryption, and pdf-lib's own error when the file can't be read.
- */
-export async function openOriginalV3(bytes: Uint8Array): Promise<PDFDocument> {
-  const first = await PDFDocument.load(bytes, { updateMetadata: false, ignoreEncryption: true });
-  if (!first.isEncrypted) {
-    // An encryption dictionary that isn't there: pdf.js reads the file as it is (it warns, and decrypts nothing), and
-    // the copy mustn't name it either.
-    first.context.trailerInfo.Encrypt = undefined;
-    return first;
-  }
-  const ctx = first.context;
-  const encryptRef = ctx.trailerInfo.Encrypt;
-  const encrypt = encryptRef instanceof PDFRef ? ctx.lookup(encryptRef) : encryptRef;
-  if (!(encrypt instanceof PDFDict)) throw new UnreadablePdf("damaged");
-  const ids = ctx.trailerInfo.ID instanceof PDFRef ? ctx.lookup(ctx.trailerInfo.ID) : ctx.trailerInfo.ID;
-  const id0 = ids instanceof PDFArray && ids.size() ? ids.get(0) : undefined;
-  const fileId = id0 instanceof PDFString || id0 instanceof PDFHexString ? stringBytes(id0) : new Uint8Array(0);
-  const handler = standardHandler(ctx, encrypt, fileId);
-  // Objects pdf.js reads without decrypting: the encryption dictionary and what it refers to.
-  const plain = new Set<string>();
-  const keep = (v: unknown) => {
-    if (v instanceof PDFRef) plain.add(`${v.objectNumber} ${v.generationNumber}`);
-  };
-  keep(encryptRef);
-  for (const [, x] of encrypt.entries()) keep(x);
-  const cf = encrypt.get(PDFName.of("CF"));
-  const cfDict = cf instanceof PDFRef ? ctx.lookup(cf) : cf;
-  if (cfDict instanceof PDFDict) for (const [, x] of cfDict.entries()) keep(x);
-
-  // Read again, decrypting each indirect object as it's read (pdf-lib's own parser, so objects are kept exactly as
-  // for any other document); an object stream is decrypted before the objects in it are read, and they aren't.
-  const parser = PDFParser.forBytesWithOptions(bytes, ParseSpeeds.Slow, false, false) as unknown as ParserInternals;
-  const header = parser.parseIndirectObjectHeader.bind(parser);
-  const object = parser.parseObject.bind(parser);
-  const indirect = parser.parseIndirectObject.bind(parser);
-  let current: PDFRef | null = null;
-  let inObject = false;
-  let depth = 0;
-  parser.parseIndirectObjectHeader = () => {
-    const ref = header();
-    current = ref;
-    return ref;
-  };
-  parser.parseIndirectObject = async () => {
-    inObject = true;
-    try {
-      return await indirect();
-    } finally {
-      inObject = false;
-      current = null;
-    }
-  };
-  parser.parseObject = () => {
-    depth++;
-    let o: PDFObject;
-    try {
-      o = object();
-    } finally {
-      depth--;
-    }
-    if (depth !== 0 || !inObject || !current) return o;
-    const ref: PDFRef = current;
-    current = null;
-    if (plain.has(`${ref.objectNumber} ${ref.generationNumber}`)) return o;
-    const n = ref.objectNumber, g = ref.generationNumber;
-    if (o instanceof PDFRawStream) {
-      const type = o.dict.get(PDFName.of("Type"));
-      // A cross-reference stream isn't encrypted.
-      if (type instanceof PDFName && type.decodeText() === "XRef") return o;
-      decryptStrings(o.dict, handler.cipher("string", n, g));
-      return decryptStream(o, handler, n, g);
-    }
-    return decryptStrings(o, handler.cipher("string", n, g));
-  };
-  const context = await parser.parseDocument();
-  if (encryptRef instanceof PDFRef) context.delete(encryptRef);
-  context.trailerInfo.Encrypt = undefined;
-  const Doc = PDFDocument as unknown as new (context: PDFContext, ignoreEncryption: boolean, updateMetadata: boolean) => PDFDocument;
-  return new Doc(context, true, false);
 }

@@ -79,7 +79,7 @@ function notices(metafile) {
 const fonts = ["instrument-sans", "jetbrains-mono"].map((f) => readFileSync(`src/fonts/OFL-${f}.txt`, "utf8").trim()).join("\n\n");
 // Renderer v3's field appearances and decryption follow pdf.js's code, and its font tables are pdf.js's (Apache-2.0).
 const pdfjs = readFileSync("src/renderer/LICENSE-pdfjs.txt", "utf8").trim();
-const thirdParty = `${notices(libs.metafile)}\n\nInstrument Sans 400 and 600, JetBrains Mono 400 (OFL-1.1)\n\n${fonts}\n\npdf.js 6.4.299 (Apache-2.0): src/renderer/fields-v3.ts and decrypt-v3.ts follow its code, and src/renderer/fonts-data-v3.ts holds its font tables\n\n${pdfjs}`.replace(/--/g, "- -");
+const thirdParty = `${notices(libs.metafile)}\n\nInstrument Sans 400 and 600, JetBrains Mono 400 (OFL-1.1)\n\n${fonts}\n\npdf.js 6.4.299 (Apache-2.0): src/renderer/pdfjs-v3.ts, content-v3.ts, open-v3.ts, fields-v3.ts and decrypt-v3.ts follow its code, and src/renderer/fonts-data-v3.ts holds its font tables\n\n${pdfjs}`.replace(/--/g, "- -");
 const safe = (js) => js.replace(/<\/script/gi, "<\\/script");
 let page = readFileSync("src/page.html", "utf8")
   .replace("/*LIBS*/", () => safe(libs.outputFiles[0].text))

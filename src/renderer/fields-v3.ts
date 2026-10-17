@@ -376,9 +376,22 @@ function parseXml(s: string, stopAt: string | null): XNode | null {
   if (stopAt) return found;
   return fragment[0] ?? null;
 }
-const textContent = (n: XNode): string => (!n.children ? n.value || "" : n.children.map(textContent).join(""));
+/** SimpleDOMNode.textContent (its text nodes' values in document order), without recursion, so any depth reads. */
+function textContent(n: XNode): string {
+  const out: string[] = [];
+  const stack: XNode[] = [n];
+  while (stack.length) {
+    const x = stack.pop()!;
+    if (!x.children) out.push(x.value || "");
+    else for (let i = x.children.length - 1; i >= 0; i--) stack.push(x.children[i]);
+  }
+  return out.join("");
+}
 /** SimpleDOMNode.searchNode. */
 function searchNode(root: XNode, paths: { name: string; pos: number }[], pos: number): XNode | null {
+  // pdf.js searches recursively, one level per component of the field's name; a name of thousands of components runs
+  // its stack out (the field is then left out), at a depth that differs between engines: v3 stops at one fixed depth.
+  if (paths.length > 1000) throw new RangeError("Maximum call stack size exceeded (XFA path)");
   if (pos >= paths.length) return root;
   const component = paths[pos];
   if (component.name.startsWith("#") && pos < paths.length - 1) return searchNode(root, paths, pos + 1);
@@ -1452,7 +1465,14 @@ function listBoxDrawing(pdf: PDFDocument, env: FieldEnv, dict: PDFDict, appearan
     const vPadding = (lineHeight - fontSize) / 2;
     const visible = Math.floor(totalHeight / lineHeight);
     let first = 0;
-    if (indices.length > 0) first = Math.min(Math.max(Math.max(...indices) - visible + 1, 0), Math.min(...indices));
+    if (indices.length > 0) {
+      let lo = indices[0], hi = indices[0];
+      for (const k of indices) {
+        if (k < lo) lo = k;
+        if (k > hi) hi = k;
+      }
+      first = Math.min(Math.max(hi - visible + 1, 0), lo);
+    }
     const end = Math.min(first + visible + 1, lineCount);
     const buf = ["/Tx BMC q", `1 1 ${totalWidth} ${totalHeight} re W n`];
     if (indices.length) {
