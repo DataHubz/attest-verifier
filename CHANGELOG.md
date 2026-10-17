@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.6.0 (unreleased)
+## 1.6.0 — 2026-10-17
 
 The signing viewer and renderer share explicit 1,000-level XFA path and value-text limits, so deeply nested fields are omitted consistently across browsers. Regression cases cover both sides of the limit, multiple values, and the reviewer's 20,000-level field.
 
