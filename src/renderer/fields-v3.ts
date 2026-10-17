@@ -16,6 +16,7 @@
 // no built-in newer than ES2020 (Math.sumPrecise, which pdf.js uses, is summed here), so every engine computes the same.
 import { PDFArray, PDFBool, PDFDict, PDFHexString, PDFName, PDFNumber, PDFRawStream, PDFRef, PDFString, type PDFContext, type PDFDocument, type PDFObject } from "pdf-lib";
 import { stringBytes } from "./decrypt-v3";
+import { XFA_MAX_DEPTH, xfaTextContent } from "./xfa-text-v3";
 import { BASIC_METRICS, DINGBATS_UNICODE, ENCODINGS, GLYPHS_UNICODE, METRICS, NON_STD_FONT_MAP, SERIF_FONTS, STANDARD_FILE_METRICS, STANDARD_TYPE1_FILES, STD_FONT_MAP, SYMBOLS_FONTS } from "./fonts-data-v3";
 
 // ---- pdf.js's helpers ----------------------------------------------------------------------------------------------
@@ -376,22 +377,14 @@ function parseXml(s: string, stopAt: string | null): XNode | null {
   if (stopAt) return found;
   return fragment[0] ?? null;
 }
-/** SimpleDOMNode.textContent (its text nodes' values in document order), without recursion, so any depth reads. */
+/** The signing viewer's bounded SimpleDOMNode.textContent, with no partial value on failure. */
 function textContent(n: XNode): string {
-  const out: string[] = [];
-  const stack: XNode[] = [n];
-  while (stack.length) {
-    const x = stack.pop()!;
-    if (!x.children) out.push(x.value || "");
-    else for (let i = x.children.length - 1; i >= 0; i--) stack.push(x.children[i]);
-  }
-  return out.join("");
+  return xfaTextContent(n, (x) => x.children, (x) => x.value);
 }
 /** SimpleDOMNode.searchNode. */
 function searchNode(root: XNode, paths: { name: string; pos: number }[], pos: number): XNode | null {
-  // pdf.js searches recursively, one level per component of the field's name; a name of thousands of components runs
-  // its stack out (the field is then left out), at a depth that differs between engines: v3 stops at one fixed depth.
-  if (paths.length > 1000) throw new RangeError("Maximum call stack size exceeded (XFA path)");
+  // The viewer's worker enforces the same path limit before its recursive search.
+  if (paths.length > XFA_MAX_DEPTH) throw new RangeError("XFA path nesting limit exceeded");
   if (pos >= paths.length) return root;
   const component = paths[pos];
   if (component.name.startsWith("#") && pos < paths.length - 1) return searchNode(root, paths, pos + 1);

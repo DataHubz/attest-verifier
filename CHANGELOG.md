@@ -2,6 +2,8 @@
 
 ## 1.6.0 (unreleased)
 
+The signing viewer and renderer share explicit 1,000-level XFA path and value-text limits, so deeply nested fields are omitted consistently across browsers. Regression cases cover both sides of the limit, multiple values, and the reviewer's 20,000-level field.
+
 Signed copies whose stamps and entries stay inside their fields, on the page as it is shown, whatever the document's own content does: renderer v3, and evidence v6 for the copies it makes.
 
 - Renderer v3 (`attest.render.v3`, `src/renderer/v3.ts`, byte for byte the one Attest's app seals with): everything drawn for an entry stays inside the field the sender placed. A signature's stamp no longer grows past a small field (renderer v2 grew it to 120 by 30 points about the field's center, over the document around it); its bracket, signature, label, code and day sit in a band along the bottom of the field, clear of its edges, with the QR code at the right, 18 to 24 points and never above the band; the stamp's text is at least 4 points, and small fields leave out the label, the day and the code, in that order, rather than set them smaller. Signature images are fitted by their ink. Text entries wrap or shrink to fit their field.
