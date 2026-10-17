@@ -1100,6 +1100,8 @@ async function checkVisiblePagesV5(ev, files, c) {
       trail: certificate ? null : c.trail,
       signers: c.signers.map((s) => ({ commitment: s.commitment, name: str((c.statementOf.get(s) || {}).name), signedAt: str((c.state.signers.find((x) => x.signer === s.commitment) || {}).signedAt) })),
       entries: certificate ? {} : c.entries,
+      // The certificate alone carries the copy's note when the agreement recorded its document as not clean.
+      ...(certificate && v.documentClean === false ? { documentNotClean: true } : {}),
     });
   } catch (e) {
     add("bad", "The pages you see couldn't be re-made from what was signed", esc(e.message));
