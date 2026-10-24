@@ -8,6 +8,9 @@ import { checkStatus } from "@digitalbazaar/vc-bitstring-status-list";
 import * as cborg from "cborg";
 import { verifyGroth16 } from "./groth16.mjs";
 import { p256 } from "@noble/curves/p256";
+// Horizen proofs (src/horizen-proof.mts, byte for byte the archive's own proof.mts), with Keccak-256 from @noble/hashes.
+import { keccak_256 } from "@noble/hashes/sha3";
+import * as horizenProof from "./horizen-proof.mts";
 // Renderers v2 and v3 re-make a v5 or v6 signed copy's visible pages; the certificate fonts they embed travel with them.
 import { renderV2, RENDERER_V2 } from "./renderer/v2.ts";
 import { renderV3, RENDERER_V3, documentProblemsV3, NOT_CLEAN_NOTE } from "./renderer/v3.ts";
@@ -89,6 +92,7 @@ window.AttestLibs = {
   checkStatus,
   cborg,
   verifyGroth16,
+  horizen: { ...horizenProof, keccak: (bytes) => keccak_256(bytes) },
   renderers: {
     [RENDERER_V2]: (input) => renderV2({ ...input, fonts: { sans: instrumentSans400, bold: instrumentSans600, mono: jetbrainsMono400 } }),
     [RENDERER_V3]: (input) => renderV3({ ...input, fonts: { sans: instrumentSans400, bold: instrumentSans600, mono: jetbrainsMono400, noto: notoSans400, notoBold: notoSans700 } }),
