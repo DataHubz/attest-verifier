@@ -1,25 +1,25 @@
 # Attest evidence formats
 
-Every Attest record can be checked without Attest: its evidence holds everything needed, and anchors are read from a public node of Horizen. What a verifier must pin, and why, is in [TRUST.md](TRUST.md).
+Every Attest record can be checked without Attest: its evidence holds everything needed, and anchors are read from a public node of Base, where Attest anchors, or, for anchors made on Horizen until it stopped on November 5, 2026, proven from Horizen's state against Base (see "Base and Horizen" below). What a verifier must pin, and why, is in [TRUST.md](TRUST.md).
 
 | Format | Record | Where it comes from |
 | --- | --- | --- |
-| `attest.agreement_evidence.v1` to `v6` | Signed agreement, its certificate (v5 and v6) | Attached to every signed PDF and agreement certificate |
-| `attest.receipt_evidence.v1`, `v2` | Receipt, scan proof | `/api/evidence/<rcpt_ or zk_ id>`, the receipt's page |
-| `attest.certificate_evidence.v1`, `v2` | Certificate | `/api/evidence/<cert_ id>`, the certificate's page |
-| `attest.card_evidence.v1`, `v2` | Shared Proof Card | `/api/evidence/<shr_ id>`, the shared card's page |
-| `attest.proof_evidence.v1`, `v2` | Agreement proof | `/api/evidence/<azk_ id>`, the proof's page |
-| `attest.analytics_evidence.v1`, `v2` | Sealed Analytics days | The Analytics dashboard (full), or a completed agreement (inclusion) |
+| `attest.agreement_evidence.v1` to `v7` | Signed agreement, its certificate (v5 to v7) | Attached to every signed PDF and agreement certificate |
+| `attest.receipt_evidence.v1` to `v3` | Receipt, scan proof | `/api/evidence/<rcpt_ or zk_ id>`, the receipt's page |
+| `attest.certificate_evidence.v1` to `v3` | Certificate | `/api/evidence/<cert_ id>`, the certificate's page |
+| `attest.card_evidence.v1` to `v3` | Shared Proof Card | `/api/evidence/<shr_ id>`, the shared card's page |
+| `attest.proof_evidence.v1` to `v3` | Agreement proof | `/api/evidence/<azk_ id>`, the proof's page |
+| `attest.analytics_evidence.v1` to `v3` | Sealed Analytics days | The Analytics dashboard (full), or a completed agreement (inclusion) |
 
-The v2 formats (v4 for agreements), from October 12, 2026, name each anchor's registry (`contract`) and wallet (`from`) where a verifier needs the wallet to ask AttestRegistryV3. The checks are the same for every version, under the trust root below.
+The v2 formats (v4 for agreements), from October 12, 2026, name each anchor's registry (`contract`) and wallet (`from`) where a verifier needs the wallet to ask AttestRegistryV3. The checks are the same for every version, under the trust root below. The v3 formats (v7 for agreements) add anchors on Base and a proof of Horizen's state ("Base and Horizen" below).
 
 Common definitions:
 
 - Fingerprints are SHA-256, lowercase hex. Text is UTF-8. Times are ISO 8601 in UTC.
 - `canonicalJson(x)`: JSON with object keys sorted, undefined members dropped, no whitespace.
-- **The trust root** (pinned by the verifier, never read from evidence): Horizen, chain id 26514; AttestRegistryV3 `0xF44Ed281005c7d506Dc50829a3E24655837FBF75`; AttestRegistryV2 `0x0C6a7918e2f8C28C4bb5Cf8d0f4CE27e9B30fa2A` (anchors until October 12, 2026); the registry authority `0x23ACBF52e76EE9502174442c87c3cD47c68f44e7`; the passkey relying party `attest.datahubz.com` and origin `https://attest.datahubz.com`; the Groth16 verification keys of Attest's circuits.
+- **The trust root** (pinned by the verifier, never read from evidence): Base, chain id 8453, with AttestRegistryV3 `0xa4B9c8FaEcF6adAed5bDc6136D3AB55F8791B80e` (anchors from November 2026); Horizen, chain id 26514, with AttestRegistryV3 `0xF44Ed281005c7d506Dc50829a3E24655837FBF75` and AttestRegistryV2 `0x0C6a7918e2f8C28C4bb5Cf8d0f4CE27e9B30fa2A` (anchors until October 12, 2026), and where Horizen settles on Base: OptimismPortal `0x78e794d10a355468A0e7A14AA1a9F9A253D78784`, DisputeGameFactory `0x4e2c464380Fb26b0C5f9B90EDF754c4E2a8d1A90`, game type 1; the registry authority `0x23ACBF52e76EE9502174442c87c3cD47c68f44e7`; the passkey relying party `attest.datahubz.com` and origin `https://attest.datahubz.com`; the Groth16 verification keys of Attest's circuits.
 - `anchoredAt(w, v)` on AttestRegistryV3 (selector `0xf8c2919d`) returns when wallet `w` anchored `v`, or 0. `isAnchored(v)` on AttestRegistryV2 (selector `0x4f0b5801`) returns `(bool anchored, uint256 timestamp, address anchorer)`.
-- **An Attest anchor** of `v` by wallet `w`: `anchoredAt(w, v) > 0` on V3, or `isAnchored(v)` on V2 with anchorer `w`; and `w` is Attest's: `registeredAt(w) > 0` on V3 (selector `0xaaea3d9c`), with `revokedAt(w)` (selector `0x1947aee4`) zero or after the anchor. The registries are open to any wallet: an anchor from an unregistered wallet is not Attest's.
+- **An Attest anchor** of `v` by wallet `w`: `anchoredAt(w, v) > 0` on V3, or `isAnchored(v)` on V2 with anchorer `w`; and `w` is Attest's: `registeredAt(w) > 0` on V3 of the same chain (selector `0xaaea3d9c`), with `revokedAt(w)` (selector `0x1947aee4`) zero or after the anchor. An anchor whose transaction the evidence names is on the chain its `chainId` names (Horizen when it names none); a value with no transaction (an issuer key, a revocation, a status change, a context, a verifier build, an agreement or its pages) is looked up on Base, then on Horizen. The registries are open to any wallet: an anchor from an unregistered wallet is not Attest's.
 - A Merkle anchor (`type: "merkle"`): leaf `sha256("<receiptId>:<fingerprint>")`, sorted-pair SHA-256 up the path to the root, which must be an Attest anchor; its transaction (`txHash`) names the wallet and records the root in its log (V3 `Anchored`, the value in `topics[3]`; V2 `RootAnchored`, the root at the start of `data`).
 - An event anchor (`type: "event"`): `sha256("attest.event.v1|" + eventId + "|" + fingerprint)`, an Attest anchor from the wallet in `from`.
 - A value anchor (`type: "value"`): the value itself, an Attest anchor from the wallet in `from` (or found on V2).
@@ -358,3 +358,56 @@ chain                chainId, rpc, contract
 ## Compatibility
 
 A format's version changes only when fields are added or a check changes. Each verifier release reads every earlier format. A verifier that meets a newer format reports it and points to the latest release; it never reports such a record as failed.
+
+# Base and Horizen
+
+Attest anchors on Base (chain 8453). Until Horizen stopped, on November 5, 2026 at 18:00 UTC, it anchored on Horizen (chain 26514), an OP Stack chain that settles on Base. Records anchored there stay verifiable: every value in Horizen's state at a block is provable from that block's header, and Horizen posted each block's output root to Base as a dispute game.
+
+The v3 formats (`attest.receipt_evidence.v3`, `attest.certificate_evidence.v3`, `attest.card_evidence.v3`, `attest.proof_evidence.v3`, `attest.analytics_evidence.v3`) and `attest.agreement_evidence.v7` are the earlier formats (v2, and v5 or v6 for agreements) with:
+
+- anchors that may name `chainId` 8453, checked on Base exactly as anchors on Horizen were checked there;
+- an optional member `horizen`, a proof of Attest's registries on Horizen, below.
+
+An agreement v7 record names no renderer of its own: its pages are re-made with the renderer its anchored completion details name (`attest.render.v2` or `attest.render.v3`). Verifiers from 1.7.0 accept an anchor on 8453 or 26514 in any format version.
+
+## The Horizen proof (`attest.horizen_proof.v1`)
+
+```
+horizen.format          "attest.horizen_proof.v1"
+horizen.chainId         26514
+horizen.block           number, hash, headerRlp: the proven Horizen block and its RLP header
+horizen.game            chainId (8453), factory, index, address: the dispute game on Base whose root claim is that block's output root
+horizen.accounts[]      address (AttestRegistryV3 or AttestRegistryV2 on Horizen), accountProof (RLP nodes, root first),
+  storage[]             slot, value (hex quantity, "0x0" when empty), proof (RLP nodes), meaning, txHash (the anchoring
+                        transaction, on anchoredAt and rootTimestamp entries)
+```
+
+`meaning` names what a slot holds, and the slot is recomputed from it (Solidity's layout, `mappingSlot(key, slot) = keccak256(key . slot)`, 32-byte words):
+
+| Meaning | Registry | Slot |
+| --- | --- | --- |
+| `anchoredAt[w][v]` | AttestRegistryV3 | `mappingSlot(v, mappingSlot(w, 1))` |
+| `registeredAt[w]` | AttestRegistryV3 | `mappingSlot(w, 2)` |
+| `revokedAt[w]` | AttestRegistryV3 | `mappingSlot(w, 3)` |
+| `rootTimestamp[v]` | AttestRegistryV2 | `mappingSlot(v, 2)` |
+| `rootAnchorer[v]` | AttestRegistryV2 | `mappingSlot(v, 3)` |
+
+Checks (`src/horizen-proof.mts` implements the proofs; it needs only Keccak-256):
+
+1. `keccak256(headerRlp) == block.hash`, and the header's number is `block.number`.
+2. The output root: `keccak256(0^32 || stateRoot || withdrawalsRoot || block.hash)` (OP Stack version 0; since Isthmus the header's `withdrawalsRoot` is the message passer's storage root).
+3. On Base: the pinned portal's `disputeGameFactory()` is the pinned factory, which is `game.factory`; the factory's `gameAtIndex(game.index)` returns game type 1 and `game.address`; the game's `rootClaim()` is the output root, `l2BlockNumber()` is `block.number`, `l2ChainId()` is 26514, and the portal's `disputeGameBlacklist(game)` is false. `status()` 2 (defender wins) settles the block; 0 (in progress) leaves it pending until the game resolves, 3.5 days after it was created (`createdAt + 302400` seconds); 1 (challenger wins) means the output root is invalid.
+4. Each account is one of the pinned Horizen registries, and its account proof verifies against the header's `stateRoot`.
+5. Each storage entry's slot is the one its meaning names, and its proof verifies against the account's `storageRoot` to `value` (an exclusion proof for 0).
+
+A slot the proof doesn't carry is unknown, never empty. The anchor checks above then read `anchoredAt`, `isAnchored`, `registeredAt` and `revokedAt` from the proven values. A transaction hash in the proof is the archive's record of where the anchor came from: the anchor itself is proven from state, the transaction is not.
+
+## Where a Horizen anchor is read
+
+In order: the proof the record carries; a node of Horizen, if one still answers (the verifier's page takes one); Attest's archive of Horizen proofs, for records sealed before they carried one:
+
+```
+GET https://attest.datahubz.com/api/horizen/proofs?q=<wallet>:<value>,...&t=<txHash>,...
+```
+
+`q` asks for `anchoredAt[wallet][value]` (or, with an empty wallet, `:<value>`, the V2 anchor of `value`), with `value` as 64 hex digits without `0x`; `t` asks for the anchor a transaction made; at most 32 of each. The answer is an `attest.horizen_proof.v1` object holding the proofs the archive has for them, each hit with its wallet's `registeredAt` and `revokedAt` (and `rootAnchorer` for V2), or 404 when it has none. It is checked exactly as a carried proof, so the archive is trusted only for the absence of a proof, which the verifier reports as Attest's statement.

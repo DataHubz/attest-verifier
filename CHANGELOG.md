@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.7.0 (2026-10-24)
+
+Attest anchors on Base, and every record it anchored on Horizen stays verifiable after Horizen stops (November 5, 2026, 18:00 UTC).
+
+- Base (chain 8453) is the current chain: AttestRegistryV3 on Base (`0xa4B9c8FaEcF6adAed5bDc6136D3AB55F8791B80e`, the same code as on Horizen) is pinned, with the same registry authority and platform wallet. An anchor on Base is checked as anchors on Horizen were: read from a Base node (its public nodes, or one entered on the page), by an Attest wallet registered on Base.
+- Horizen (chain 26514) is a historical chain. An anchor on Horizen is proven from Horizen's state: a proof of Attest's registries at a Horizen block (`src/horizen-proof.mts`, byte for byte the proof code of Attest's Horizen archive), checked from the block header to the storage slot, and the block's output root checked against the dispute game Horizen posted to Base, through the pinned portal and factory, of the pinned permissioned type, resolved in the defender's favor and not blacklisted. A game still in progress is reported as pending until it resolves.
+- Where a Horizen anchor is read: the proof the record carries, a Horizen node while one answers (the page takes one), or Attest's archive of Horizen proofs for files sealed before they carried one, checked exactly like a carried proof.
+- Values with no transaction (issuer keys, revocations, status changes, contexts, verifier builds, agreements and their pages) are looked up on Base, then in Horizen's history. The verifiers attached to earlier signed copies, anchored on Horizen, are checked the same way.
+- Evidence v3 (receipts, certificates, Proof Cards, agreement proofs, Analytics) and agreement evidence v7: anchors on Base, and the `horizen` proof. A v7 agreement's pages are re-made with the renderer its anchored details name. Earlier releases report these as a newer format.
+- Explorer links point at each chain's explorer; no result depends on one.
+- `npm test` also checks Horizen proofs taken from Attest's archive (`test/horizen.mjs`): valid ones verify; a changed node, header, value or slot, another account, another game, type or chain, a challenged or blacklisted game are refused; a pending game is reported as pending.
+
 ## 1.6.0 — 2026-10-17
 
 The signing viewer and renderer share explicit 1,000-level XFA path and value-text limits, so deeply nested fields are omitted consistently across browsers. Regression cases cover both sides of the limit, multiple values, and the reviewer's 20,000-level field.

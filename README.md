@@ -15,17 +15,17 @@ Every Attest signed copy carries this verifier as an attachment, together with t
 
 A signed copy also carries this verifier: before anything else, the verifier checks that the attached copy is a build Attest published, anchored on chain by Attest's platform organization.
 
-Every check runs under a trust root the verifier pins and never takes from a file: Horizen, Attest's registries, the registry authority that lists Attest's wallets, the site where passkeys sign, and each circuit's verification key. An anchor counts only when its wallet is one of Attest's, and a signed PDF counts only if nothing follows its signed pages but Attest's own attachments. [TRUST.md](TRUST.md) describes the model and the attacks it stops.
+Every check runs under a trust root the verifier pins and never takes from a file: Base, where Attest anchors, and Horizen, where it anchored until November 5, 2026, with Attest's registries on each, where Horizen settles on Base, the registry authority that lists Attest's wallets, the site where passkeys sign, and each circuit's verification key. An anchor counts only when its wallet is one of Attest's, and a signed PDF counts only if nothing follows its signed pages but Attest's own attachments. [TRUST.md](TRUST.md) describes the model and the attacks it stops.
 
 Each format and check is specified in [FORMAT.md](FORMAT.md), so the checks can be reimplemented in any language.
 
 ## Use
 
 1. Download `attest-verifier.html` from the latest release, or save the copy attached to a signed PDF (a PDF reader's attachments panel lists it).
-2. Open it in a current browser. It works from disk, offline, except the on-chain checks, which read from Horizen's public node. Any other node of Horizen can be entered on the page: it is only a source of data, checked against the pinned registries and authority.
+2. Open it in a current browser. It works from disk, offline, except the on-chain checks, which read from Base's public nodes. Any other node of Base can be entered on the page: it is only a source of data, checked against the pinned registries and authority. Records anchored on Horizen, which stopped on November 5, 2026, are checked from the proof of Horizen's state their evidence carries (or, for files made before evidence carried one, a node of Horizen entered on the page, or a proof from Attest's archive), checked here up to the dispute game on Base that settled it.
 3. Drop a signed PDF, or an evidence file (`attest-evidence-….json`) downloaded from a record's page. Add the original file or the certificate PDF to check it too.
 
-The page makes no requests besides those on-chain reads, and the opt-in "Check for a newer version" button, which reads the release manifest from attest.datahubz.com or this repository.
+The page makes no requests besides those on-chain reads, Attest's archive of Horizen proofs (only for a Horizen anchor the file carries no proof of, when no Horizen node answers), and the opt-in "Check for a newer version" button, which reads the release manifest from attest.datahubz.com or this repository.
 
 ## What the verifier carries itself
 
@@ -53,7 +53,7 @@ The build is reproducible: the same sources and lockfile produce the same bytes,
 
 ## Authenticity of releases
 
-Each release lists the SHA-256 of `attest-verifier.html`. Attest's platform organization anchors every build it serves on Horizen as `sha256("attest.verifier.v1|" + version + "|" + sha256(file))` (FORMAT.md), before the build is served, and every verifier from 1.5.0 on checks the copy attached to a signed PDF against those anchors. Each fingerprint is also recorded as an Attest receipt: drop the downloaded file on [attest.datahubz.com/verify](https://attest.datahubz.com/verify) to confirm it is the published release, or rebuild it from source.
+Each release lists the SHA-256 of `attest-verifier.html`. Attest's platform organization anchors every build it serves (on Horizen until November 5, 2026, on Base since) as `sha256("attest.verifier.v1|" + version + "|" + sha256(file))` (FORMAT.md), before the build is served, and every verifier from 1.5.0 on checks the copy attached to a signed PDF against those anchors. Each fingerprint is also recorded as an Attest receipt: drop the downloaded file on [attest.datahubz.com/verify](https://attest.datahubz.com/verify) to confirm it is the published release, or rebuild it from source.
 
 ## Security
 

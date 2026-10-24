@@ -1,7 +1,8 @@
 # Trust model
 
 What the verifier relies on, what it checks, and which attacks each check stops. Everything here holds with no Attest
-service involved: the verifier reads only the file it is given and a public node of Horizen.
+service involved: the verifier reads only the file it is given and a public node of Base (and, for records anchored on
+Horizen, a Horizen node while one answers, or a proof of Horizen's state checked against Base; see "Horizen's history").
 
 ## The trust root
 
@@ -9,10 +10,12 @@ The verifier pins these values in `src/main.js` (`TRUST`) and never reads them f
 
 | What | Value |
 | --- | --- |
-| Chain | Horizen, chain id 26514. Any node can be used; the verifier checks its chain id. |
-| Registry | AttestRegistryV3, `0xF44Ed281005c7d506Dc50829a3E24655837FBF75` (anchors from October 12, 2026) |
-| Earlier registry | AttestRegistryV2, `0x0C6a7918e2f8C28C4bb5Cf8d0f4CE27e9B30fa2A` (anchors until October 12, 2026) |
-| Registry authority | `0x23ACBF52e76EE9502174442c87c3cD47c68f44e7`, fixed in AttestRegistryV3 |
+| Chain | Base, chain id 8453, where Attest anchors. Any node can be used; the verifier checks its chain id. |
+| Registry | AttestRegistryV3 on Base, `0xa4B9c8FaEcF6adAed5bDc6136D3AB55F8791B80e` (deployed at block 53036479, the same code as on Horizen) |
+| Historical chain | Horizen, chain id 26514, where Attest anchored until it stopped on November 5, 2026 |
+| Horizen registries | AttestRegistryV3, `0xF44Ed281005c7d506Dc50829a3E24655837FBF75` (anchors from October 12, 2026); AttestRegistryV2, `0x0C6a7918e2f8C28C4bb5Cf8d0f4CE27e9B30fa2A` (anchors until October 12, 2026) |
+| Horizen on Base | OptimismPortal `0x78e794d10a355468A0e7A14AA1a9F9A253D78784`, its DisputeGameFactory `0x4e2c464380Fb26b0C5f9B90EDF754c4E2a8d1A90`, game type 1 (permissioned) |
+| Registry authority | `0x23ACBF52e76EE9502174442c87c3cD47c68f44e7`, fixed in AttestRegistryV3 on both chains |
 | Platform wallet | `0xdEa7B859DcBd34deB8dc910b5b36d6ACdBeC6F3a`, Attest's platform organization: anchors every verifier build Attest has served |
 | Passkey site | relying party `attest.datahubz.com`, origin `https://attest.datahubz.com` |
 | Circuits | the Groth16 verification keys in `src/circuits/` |
@@ -20,7 +23,7 @@ The verifier pins these values in `src/main.js` (`TRUST`) and never reads them f
 | Renderers | `attest.render.v2` and `attest.render.v3` in `src/renderer/`, with their fonts in `src/fonts/`; an agreement's anchored completion details name its renderer |
 
 The registries are open: any wallet can anchor any value. An anchor counts as Attest's only when the wallet that made
-it is registered on AttestRegistryV3 by the registry authority and was not revoked before the anchor. The authority is
+it is registered on AttestRegistryV3 of the same chain by the registry authority and was not revoked before the anchor. The authority is
 an Attest wallet whose key only Attest's signer service holds; the signer lets it register wallets it derives itself,
 and nothing else. AttestRegistryV3 records each value per wallet, so nobody can block or take over Attest's anchor of a
 value by anchoring it first.
@@ -33,7 +36,9 @@ leaves, `sha256(receiptId + ":" + fingerprint)`. No account can make an Attest w
 
 | Attack | What stops it |
 | --- | --- |
-| A file names its own chain, node, registry contract or passkey site | All pinned; the file's values are ignored. An anchor on another chain fails. |
+| A file names its own chain, node, registry contract or passkey site | All pinned; the file's values are ignored. An anchor on a chain other than Base or Horizen fails. |
+| A Horizen proof with a changed node, header, value or slot, of another contract, or for another block | Every proof is checked from the header to the storage slot, each slot recomputed from what it is said to hold and only the pinned registries' accounts read: any change fails. |
+| A Horizen proof against an output root Horizen never settled | The game is found through the pinned portal and factory, must be of the pinned type 1, for chain 26514, at the proven block, with the proven output root, not blacklisted, and not won by its challenger. A game still in progress is reported as pending, with when it resolves. |
 | A record anchored on Attest's open registry from someone else's wallet | The wallet isn't registered by the authority: fails. |
 | An account holder records a receipt for a forged agreement's signed state | A receipt proves only that a fingerprint was recorded. An agreement also needs Attest's own anchor, `attest.agreement.v1`, which only Attest's completion of that agreement makes. |
 | A signer's passkey key and signature swapped for an attacker's own | Attest's agreement anchor commits to every signer's statement, passkey key and signature: a swapped one changes the value, which was never anchored. |
@@ -53,8 +58,37 @@ leaves, `sha256(receiptId + ":" + fingerprint)`. No account can make an Attest w
 | A certificate PDF whose pages were redrawn | A v5 certificate's pages are re-made from what was signed and anchored and compared byte for byte. Earlier certificates' pages aren't checked: the verifier says so, and shows the signed and anchored names, dates and fingerprints to compare with. |
 | A link that runs a script (`javascript:`), opens data or a local file, or a viewer command (print, save), written directly or behind an indirect reference | A link, an outline item or a chained action keeps only a jump within the document, an article thread, a web or email address, or a page turn; the renderer removes every other action, reading names through references as readers do. |
 | An attachment that hides from the check (another name, a byte order mark, a comment, an SVG, a missing type) | The verifier finds attachments the way a reader does, through file specifications, and every file other than the evidence and the document must be a verifier build Attest anchored. |
-| A file that tries to run a script in the page | The page runs only its own scripts, by hash (Content Security Policy); links go only to the pinned explorer. Served from attest.datahubz.com it is also sandboxed away from the app's cookies and storage. |
+| A file that tries to run a script in the page | The page runs only its own scripts, by hash (Content Security Policy); links go only to the pinned explorers. Served from attest.datahubz.com it is also sandboxed away from the app's cookies and storage. |
 | A display that shows more than was checked | Titles, names, dates and descriptions shown are the signed or anchored ones. A receipt's description, which no anchor covers, is labeled as the account's own text. |
+
+## Horizen's history
+
+Horizen stopped on November 5, 2026. Its anchors are checked from proofs of its state (`src/horizen-proof.mts`):
+a Merkle Patricia proof of a registry slot, from the registry's account, from the state root of a Horizen block header,
+whose hash and output root Horizen's proposer posted to Base as the root claim of a dispute game.
+
+What a proof proves: that the slot held that value in Horizen's state at the proven block, under the output root that
+the dispute game on Base claims. What it doesn't prove: the absence of anything it doesn't carry (a slot it lacks is
+unknown, never empty), which transaction made an anchor (the transaction hash it names is the archive's record), and
+anything after the proven block.
+
+What it relies on:
+
+- **Horizen's proposer.** Horizen settles with game type 1, permissioned: only Horizen's proposer creates its games,
+  and only its permissioned challenger can dispute them. An output root therefore holds on the proposer's word once its
+  game resolves in the defender's favor (3.5 days after it was created) and Horizen's guardian hasn't blacklisted it;
+  nobody else could have posted it, or challenged it. The verifier counts games of type 1 only, found through the
+  pinned portal and factory, so a game of another type (one anyone may create) never counts. A game still in progress
+  is reported as pending, and a game its challenger won as invalid.
+- **Base**, for reading the game, through any node of Base.
+- **The portal and the factory**, upgradeable contracts run by Horizen's administrators. The verifier checks that the
+  portal still names the pinned factory, and reads the game through the factory's own list.
+
+Where proofs come from: the record's evidence (v3 formats, v7 for agreements), a node of Horizen if one still answers,
+or Attest's archive of Horizen proofs for files sealed before they carried one. A proof from the archive is checked
+exactly as a carried one, so the archive is trusted for nothing but an absence: when it has no proof of an anchor, the
+verifier reports that as Attest's statement. Checks of a current status (a revocation, a card's status) read Base and
+Horizen's history; a status anchored on Horizen and never carried is known only through a Horizen node or the archive.
 
 ## What a result covers
 
