@@ -57,6 +57,33 @@ for (const [version, dir] of [["v2", "test/renderer"], ["v3", "test/renderer/v3"
   failed += bad;
   total += cases.length;
   if (version !== "v3") continue;
+  // The chain the pages name (evidence v7 gives it in visibleCopy.chainId): Horizen's chain id, or none, gives the exact
+  // expected bytes of every earlier copy; Base's gives other bytes, whose drawn text names Base and never Horizen.
+  {
+    const c = cases.find((x) => x.input.variant === "full" && x.input.agreement.anchorTxHash);
+    const { PDFPage } = require("pdf-lib");
+    const draw = PDFPage.prototype.drawText;
+    const run = async (anchorChainId) => {
+      const drawn = [];
+      PDFPage.prototype.drawText = function (text, options) { drawn.push(String(text)); return draw.call(this, text, options); };
+      try {
+        const own = { sans: new Uint8Array(fonts.sans), bold: new Uint8Array(fonts.bold), mono: new Uint8Array(fonts.mono), noto: new Uint8Array(fonts.noto), notoBold: new Uint8Array(fonts.notoBold) };
+        const bytes = await render({ ...c.input, agreement: { ...c.input.agreement, anchorChainId }, original: c.input.original === null ? null : new Uint8Array(Buffer.from(c.input.original, "base64")), fonts: own });
+        return { h: createHash("sha256").update(bytes).digest("hex"), text: drawn.join(" ").replace(/\s+/g, " ") };
+      } finally {
+        PDFPage.prototype.drawText = draw;
+      }
+    };
+    const horizen = await run(26514), base = await run(8453);
+    const checks = [
+      [horizen.h === expected[c.name], "chain 26514 renders the expected bytes"],
+      [base.h !== expected[c.name], "chain 8453 renders other bytes"],
+      [/Anchored on Base/.test(base.text) && /Base transaction 0x[0-9a-f]{64} recorded/.test(base.text) && /Any Base node confirms them/.test(base.text) && !/Horizen/i.test(base.text), "chain 8453 names Base, and never Horizen"],
+      [/Anchored on Horizen/.test(horizen.text), "chain 26514 names Horizen"],
+    ];
+    for (const [ok, what] of checks) if (!ok) { failed++; console.log(`FAIL v3 ${c.name}: ${what}`); }
+    console.log(`renderer v3, the anchor's chain on the pages: ${checks.filter(([ok]) => ok).length}/${checks.length} (${c.name})`);
+  }
   // The same bytes in an older engine: every case again, with every built-in newer than ES2020 removed and
   // Math.sumPrecise present but wrong (renderer v3 sums glyph widths itself, as pdf.js's Math.sumPrecise does).
   const typed = Object.getPrototypeOf(Uint8Array.prototype);

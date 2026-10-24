@@ -39,7 +39,12 @@ export interface RenderInputV2 {
   variant: "full" | "pages" | "certificate";
   /** Where verification links point: https://attest.datahubz.com. */
   appUrl: string;
-  agreement: { id: string; title: string; documentSha256: string; completionHash: string; anchorTxHash: string | null };
+  /**
+   * anchorChainId: the chain the signed state's anchor is on (from the record: evidence v7 names it in
+   * visibleCopy.chainId). The pages name Base for 8453 and Horizen otherwise, so a copy made without it (every copy
+   * before evidence v7) reads exactly as it always has.
+   */
+  agreement: { id: string; title: string; documentSha256: string; completionHash: string; anchorTxHash: string | null; anchorChainId?: number | null };
   /** The completion details, as bound by the agreement anchor v2 (parsed). */
   details: {
     verifyCode: string | null;
@@ -382,7 +387,10 @@ function guilloche(page: PDFPage, x: number, y: number, w: number, h: number, li
 }
 
 /** The Attest seal: rosette rings, a ring of text, and a check at the center. */
-function seal(page: PDFPage, bold: PDFFont, cx: number, cy: number, r: number) {
+/** The chain the pages name for an anchor: Base on chain 8453, Horizen otherwise (as every earlier copy reads). */
+const anchorChainName = (chainId: number | null | undefined) => (chainId === 8453 ? "Base" : "Horizen");
+
+function seal(page: PDFPage, bold: PDFFont, cx: number, cy: number, r: number, chain: string) {
   page.drawCircle({ x: cx, y: cy, size: r, borderColor: ACCENT, borderWidth: 1.2, color: rgb(1, 1, 1) });
   page.drawCircle({ x: cx, y: cy, size: r - 3.5, borderColor: ACCENT, borderWidth: 0.4 });
   for (let k = 0; k < 6; k++) {
@@ -396,7 +404,7 @@ function seal(page: PDFPage, bold: PDFFont, cx: number, cy: number, r: number) {
   }
   page.drawCircle({ x: cx, y: cy, size: r * 0.42, color: ACCENT });
   page.drawSvgPath(`M ${(-r * 0.17).toFixed(2)} 0 L ${(-r * 0.05).toFixed(2)} ${(r * 0.12).toFixed(2)} L ${(r * 0.19).toFixed(2)} ${(-r * 0.13).toFixed(2)}`, { x: cx, y: cy, borderColor: rgb(1, 1, 1), borderWidth: 2.2 });
-  const text = "SEALED BY DATAHUBZ ATTEST  ·  ANCHORED ON HORIZEN  ·  PROVEN ON ZKVERIFY  ·  ";
+  const text = `SEALED BY DATAHUBZ ATTEST  ·  ANCHORED ON ${chain.toUpperCase()}  ·  PROVEN ON ZKVERIFY  ·  `;
   const size = r * 0.105;
   const rr = r - 9.5;
   const widths = [...text].map((ch) => bold.widthOfTextAtSize(ch, size));
@@ -530,7 +538,7 @@ async function certificatePages(pdf: PDFDocument, input: RenderInputV2, certUrl:
   // ---- The certificate -------------------------------------------------------------------------------
   const p = pdf.addPage([W, H]);
   header(p, "Certificate of completion");
-  seal(p, bold, W - M - 50, H - 128 - 6, 52);
+  seal(p, bold, W - M - 50, H - 128 - 6, 52, anchorChainName(a.anchorChainId));
   let y = H - 128 - 46;
   for (const ln of wrap(a.title, bold, 15, W - 2 * M - 120)) {
     p.drawText(ln, { x: M, y, size: 15, font: bold, color: INK });
@@ -564,7 +572,7 @@ async function certificatePages(pdf: PDFDocument, input: RenderInputV2, certUrl:
   l = fact(M, y, "Document fingerprint (SHA-256)", a.documentSha256, true);
   r = fact(M + col, y, "Signed-state fingerprint", a.completionHash, true);
   y = Math.min(l, r) - 10;
-  l = fact(M, y, "Anchored on Horizen", a.anchorTxHash ?? "Anchoring: a transaction is on its way", Boolean(a.anchorTxHash));
+  l = fact(M, y, `Anchored on ${anchorChainName(a.anchorChainId)}`, a.anchorTxHash ?? "Anchoring: a transaction is on its way", Boolean(a.anchorTxHash));
   r = fact(M + col, y, "Zero-knowledge proofs", "Each party can prove they signed, and when, without revealing the document: verified on zkVerify");
   y = Math.min(l, r) - 18;
 
@@ -638,14 +646,14 @@ async function certificatePages(pdf: PDFDocument, input: RenderInputV2, certUrl:
     ["With no Attest service", "This certificate carries its own verifier. Open its attachments (any PDF reader lists them), save attest-verifier.html anywhere, open it in any browser and drop this PDF on it. It checks every step below on your device, reading only the public blockchain, and re-makes these pages from what was signed and anchored to show they are exactly Attest's certificate."],
     ["The document", `The document stays with the parties: Attest never had it. Its SHA-256 is ${a.documentSha256}, the fingerprint every signer's statement names, and each party's signed copy carries it.`],
     ["Each signature", "attest-evidence.json, attached, holds for every signer the exact statement they signed, their passkey's public key, and the WebAuthn signature. Any WebAuthn library checks it: the signature covers the authenticator data and the SHA-256 of the client data, whose challenge is the SHA-256 of the statement."],
-    ["The anchor", a.anchorTxHash ? `The evidence holds the exact signed-state text (SHA-256 ${a.completionHash}) and its Merkle path to the root that Horizen transaction ${a.anchorTxHash} recorded, and Attest's own anchor of the agreement, its signatures and these details. Any Horizen node confirms them.` : "The anchoring transaction appears on the live verification page as soon as it confirms."],
+    ["The anchor", a.anchorTxHash ? `The evidence holds the exact signed-state text (SHA-256 ${a.completionHash}) and its Merkle path to the root that ${anchorChainName(a.anchorChainId)} transaction ${a.anchorTxHash} recorded, and Attest's own anchor of the agreement, its signatures and these details. Any ${anchorChainName(a.anchorChainId)} node confirms them.` : "The anchoring transaction appears on the live verification page as soon as it confirms."],
     ["The proofs", "Each party can prove they signed, and when, with a zero-knowledge proof (Groth16) that reveals nothing else, verified on zkVerify, an independent network."],
     ["The standards", "WebAuthn (W3C) for signatures, SHA-256 (NIST FIPS 180-4) for fingerprints, Merkle trees for anchoring, Groth16 for zero-knowledge proofs. No proprietary format anywhere."],
   ] : [
     ["With no Attest service", "This PDF carries its own verifier. Open its attachments (any PDF reader lists them), save attest-verifier.html anywhere, open it in any browser and drop this PDF on it. It checks every step below on your device, reading only the public blockchain, and re-makes these pages from what was signed to show they are exactly the signed copy."],
     ["The document", `original-document.pdf, attached, is the document exactly as it was signed: its SHA-256 is ${a.documentSha256}, the fingerprint every signer's statement names.`],
     ["Each signature and entry", "attest-evidence.json, attached, holds for every signer the exact statement they signed, the exact text of their entries (its SHA-256 is in the statement), their passkey's public key, and the WebAuthn signature. Any WebAuthn library checks it: the signature covers the authenticator data and the SHA-256 of the client data, whose challenge is the SHA-256 of the statement."],
-    ["The anchor", a.anchorTxHash ? `The evidence holds the exact signed-state text (SHA-256 ${a.completionHash}) and its Merkle path to the root that Horizen transaction ${a.anchorTxHash} recorded, and Attest's own anchor of the agreement, its signatures and these details. Any Horizen node confirms them.` : "The anchoring transaction appears on the live verification page as soon as it confirms."],
+    ["The anchor", a.anchorTxHash ? `The evidence holds the exact signed-state text (SHA-256 ${a.completionHash}) and its Merkle path to the root that ${anchorChainName(a.anchorChainId)} transaction ${a.anchorTxHash} recorded, and Attest's own anchor of the agreement, its signatures and these details. Any ${anchorChainName(a.anchorChainId)} node confirms them.` : "The anchoring transaction appears on the live verification page as soon as it confirms."],
     ["The proofs", "Each party can prove they signed, and when, with a zero-knowledge proof (Groth16) that reveals nothing else, verified on zkVerify, an independent network."],
     ["The standards", "WebAuthn (W3C) for signatures, SHA-256 (NIST FIPS 180-4) for fingerprints, Merkle trees for anchoring, Groth16 for zero-knowledge proofs. No proprietary format anywhere."],
   ];
