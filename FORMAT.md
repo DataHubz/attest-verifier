@@ -368,7 +368,7 @@ The v3 formats (`attest.receipt_evidence.v3`, `attest.certificate_evidence.v3`, 
 - anchors that may name `chainId` 8453, checked on Base exactly as anchors on Horizen were checked there;
 - an optional member `horizen`, a proof of Attest's registries on Horizen, below.
 
-An agreement v7 record names no renderer of its own: its pages are re-made with the renderer its anchored completion details name (`attest.render.v2` or `attest.render.v3`). Verifiers from 1.7.0 accept an anchor on 8453 or 26514 in any format version.
+An agreement v7 record names no renderer of its own: its pages are re-made with the renderer its anchored completion details name (`attest.render.v2` or `attest.render.v3`). Its `visibleCopy.chainId` is the chain the pages name (the signed state's anchor chain, or the chain Attest anchored on when the copy was made before that anchor existed): it must be 8453 or 26514 and, when `anchor` is present, equal `anchor.chainId` (26514 when it names none). The renderer is given it as `agreement.anchorChainId`, and the pages name Base for 8453 and Horizen for 26514 (the seal's ring, the "Anchored on" fact, and the anchor step of "How to verify"). For v5 and v6 records the renderer is given no chain: their pages name Horizen, as they always have. Verifiers from 1.7.0 accept an anchor on 8453 or 26514 in any format version.
 
 ## The Horizen proof (`attest.horizen_proof.v1`)
 
