@@ -7,7 +7,7 @@
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
-    "test": "node groth16-check.mjs test/vectors/*.json && node test/structure.mjs && node test/renderer.mjs"
+    "test": "node groth16-check.mjs test/vectors/*.json && node test/structure.mjs && node test/renderer.mjs && node test/horizen.mjs"
   },
   "devDependencies": {
     "@digitalbazaar/data-integrity": "2.5.0",
