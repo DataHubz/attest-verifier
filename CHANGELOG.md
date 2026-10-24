@@ -13,7 +13,7 @@ Attest anchors on Base, and every record it anchored on Horizen stays verifiable
 - Explorer links point at each chain's explorer; no result depends on one.
 - `npm test` also checks Horizen proofs taken from Attest's archive (`test/horizen.mjs`): valid ones verify; a changed node, header, value or slot, another account, another game, type or chain, a challenged or blacklisted game are refused; a pending game is reported as pending.
 
-## 1.6.0 — 2026-10-17
+## 1.6.0 (2026-10-17)
 
 The signing viewer and renderer share explicit 1,000-level XFA path and value-text limits, so deeply nested fields are omitted consistently across browsers. Regression cases cover both sides of the limit, multiple values, and the reviewer's 20,000-level field.
 
