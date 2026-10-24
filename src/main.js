@@ -1356,6 +1356,15 @@ async function verifyAgreementV5(ev, files, format) {
     } catch (e) { add("bad", `${who}: passkey signature could not be checked`, esc(e.message)); }
   }
 
+  // v7: the chain the pages name (visibleCopy.chainId), which must be Base or Horizen and, once the signed state is
+  // anchored, the chain of its anchor. Earlier formats always name Horizen, and the renderer is given no chain.
+  let pagesChain = null;
+  if (format >= 7 && ev.visibleCopy) {
+    pagesChain = Number(ev.visibleCopy.chainId);
+    if (!CHAINS[pagesChain]) { add("bad", "The pages name a chain Attest doesn't anchor on", `Chain ${esc(ev.visibleCopy.chainId)}: Attest anchors on Base, and anchored on Horizen until November 5, 2026.`); pagesChain = null; }
+    else if (ev.anchor && anchorChain(ev.anchor) !== pagesChain) { add("bad", "The pages name another chain than the signed state's anchor", `The pages name ${chainName(pagesChain)}; the anchor is on ${chainName(anchorChain(ev.anchor))}.`); pagesChain = null; }
+  }
+
   // 5. The anchors: the signed state's receipt, then Attest's agreement anchor v2 (signatures and details).
   const an = ev.anchor;
   let wallet = null, stateAt = null, anchorTx = null;
@@ -1378,7 +1387,7 @@ async function verifyAgreementV5(ev, files, format) {
   }
 
   // 6. The visible pages, re-made here from what was signed.
-  const notClean = files.outer ? await checkVisiblePagesV5(ev, files, { renderer, id, title, stateSha, anchorTx, wallet, details: detailsOk ? details : null, trail, signers, statementOf, state, entries, entriesComplete, original }) : false;
+  const notClean = files.outer ? await checkVisiblePagesV5(ev, files, { renderer, id, title, stateSha, anchorTx, anchorChainId: format >= 7 ? pagesChain : undefined, wallet, details: detailsOk ? details : null, trail, signers, statementOf, state, entries, entriesComplete, original }) : false;
   if (!files.outer && ev.visibleCopy && isHex64(ev.visibleCopy.sha256)) add("info", "Drop the signed PDF itself to check the pages you see", `Its visible pages have SHA-256 ${mono(ev.visibleCopy.sha256)}.`);
 
   // 7. Zero-knowledge proofs about this agreement.
@@ -1411,6 +1420,7 @@ async function checkVisiblePagesV5(ev, files, c) {
   const needs = certificate ? null : !c.original ? "The original document isn't in this file." : !c.entriesComplete ? "A signer's entries are missing from the evidence." : v.variant === "full" && !c.trail ? "The audit trail isn't in the evidence." : null;
   // A v5 signed copy always carries what re-making its pages needs: without it, the file was changed.
   if (needs) { add("bad", "The pages you see can't be re-made from this file's evidence", `${needs} A ${v.variant === "pages" ? "signed pages copy" : "signed copy"} always carries it, so this file was changed.`); return; }
+  if (c.anchorChainId === null) { add("bad", "The pages you see can't be re-made from this file's evidence", "The chain they name isn't the signed state's anchor chain."); return; }
   if (!c.details || !c.state || !c.anchorTx || !remake) {
     add("warn", "The pages you see couldn't be re-made here", !c.anchorTx ? "The signed state's anchor transaction didn't check out." : "The signed state or the completion details didn't check out.");
     return;
@@ -1421,7 +1431,7 @@ async function checkVisiblePagesV5(ev, files, c) {
       original: certificate ? null : c.original,
       variant: v.variant,
       appUrl: TRUST.webauthn.origin,
-      agreement: { id: c.id, title: c.title, documentSha256: str(ev.document.sha256), completionHash: c.stateSha, anchorTxHash: c.anchorTx },
+      agreement: { id: c.id, title: c.title, documentSha256: str(ev.document.sha256), completionHash: c.stateSha, anchorTxHash: c.anchorTx, ...(c.anchorChainId ? { anchorChainId: c.anchorChainId } : {}) },
       details: c.details,
       trail: certificate ? null : c.trail,
       signers: c.signers.map((s) => ({ commitment: s.commitment, name: str((c.statementOf.get(s) || {}).name), signedAt: str((c.state.signers.find((x) => x.signer === s.commitment) || {}).signedAt) })),

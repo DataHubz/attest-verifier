@@ -154,6 +154,17 @@ await test("an anchor on another chain fails, and a newer format is reported as 
   assert(n.length === 1 && /newer evidence format/.test(n[0].title), JSON.stringify(n));
 });
 
+await test("agreement evidence v7: the pages' chain must be Base or Horizen, and the signed state's anchor chain", async () => {
+  const ev = (visibleCopy, anchor) => ({ format: "attest.agreement_evidence.v7", agreementId: "agr_TEST", document: { sha256: "a".repeat(64) }, signers: [{ commitment: "c", statement: "{}" }], details: "{}", visibleCopy, anchor });
+  const titles = (r) => r.filter((x) => x.state === "bad").map((x) => x.title).join(" | ");
+  const other = await run("return verify(input, { pdf: null, outer: null }).then(() => results);", ev({ chainId: 1 }, null));
+  assert(/The pages name a chain Attest doesn't anchor on/.test(titles(other)), titles(other));
+  const mismatch = await run("return verify(input, { pdf: null, outer: null }).then(() => results);", ev({ chainId: 8453 }, { merkleRoot: "b".repeat(64) }));
+  assert(/another chain than the signed state's anchor/.test(titles(mismatch)), titles(mismatch));
+  const same = await run("return verify(input, { pdf: null, outer: null }).then(() => results);", ev({ chainId: 26514 }, { merkleRoot: "b".repeat(64) }));
+  assert(!/chain/.test(titles(same)), titles(same));
+});
+
 await test("a changed byte in a storage proof node is refused", async () => {
   const b = clone();
   const s = b.accounts[0].storage[0];
