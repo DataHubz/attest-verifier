@@ -2,34 +2,60 @@
 // This file's version, and the evidence formats it reads. Every release reads every earlier format, so an
 // older record verifies with any newer verifier; a record in a newer format is reported as such.
 const VERIFIER = {
-  version: "1.6.0",
-  formats: { agreement: [1, 2, 3, 4, 5, 6], receipt: [1, 2], certificate: [1, 2], card: [1, 2], proof: [1, 2], analytics: [1, 2] },
+  version: "1.7.0",
+  formats: { agreement: [1, 2, 3, 4, 5, 6, 7], receipt: [1, 2, 3], certificate: [1, 2, 3], card: [1, 2, 3], proof: [1, 2, 3], analytics: [1, 2, 3] },
   repo: "https://github.com/DataHubz/attest-verifier",
   latest: ["https://attest.datahubz.com/attest-verifier/latest.json", "https://raw.githubusercontent.com/DataHubz/attest-verifier/main/latest.json"],
 };
 
 /**
- * The trust root, pinned in this file and never read from a file being checked: the chain Attest anchors on, its
+ * The trust root, pinned in this file and never read from a file being checked: the chains Attest anchors on, their
  * registries, the registry authority that lists Attest's wallets, and the site where passkeys sign.
  *
  * The registries are open: anyone can anchor any value from any wallet. An anchor counts as Attest's only when its
- * wallet is registered on AttestRegistryV3 by the authority below (and wasn't revoked before the anchor). The
- * authority is fixed in that contract and only ever registers wallets whose keys Attest's signer derives.
+ * wallet is registered on AttestRegistryV3 of the same chain by the authority below (and wasn't revoked before the
+ * anchor). The authority is fixed in that contract and only ever registers wallets whose keys Attest's signer derives.
+ *
+ * Attest anchors on Base. Until November 5, 2026 it anchored on Horizen, which stopped then: its anchors stay
+ * checkable through proofs of Horizen's state against the output roots Horizen posted to Base (src/horizen-proof.mts).
  */
 const TRUST = {
-  chainId: 26514,
-  chain: "Horizen",
-  rpcs: ["https://horizen.calderachain.xyz/http"],
-  explorer: "https://horizen.calderaexplorer.xyz",
-  registry: "0xf44ed281005c7d506dc50829a3e24655837fbf75", // AttestRegistryV3: values per wallet, and Attest's wallets
-  registryV2: "0x0c6a7918e2f8c28c4bb5cf8d0f4ce27e9b30fa2a", // AttestRegistryV2: anchors made until October 12, 2026
+  base: {
+    chainId: 8453,
+    name: "Base",
+    rpcs: ["https://mainnet.base.org", "https://base-rpc.publicnode.com"],
+    explorer: "https://basescan.org",
+    registry: "0xa4b9c8faecf6adaed5bdc6136d3ab55f8791b80e", // AttestRegistryV3 on Base, deployed at block 53036479
+  },
+  horizen: {
+    chainId: 26514,
+    name: "Horizen",
+    rpcs: ["https://horizen.calderachain.xyz/http"],
+    explorer: "https://horizen.calderaexplorer.xyz", // for links only: no result depends on it
+    registry: "0xf44ed281005c7d506dc50829a3e24655837fbf75", // AttestRegistryV3: values per wallet, and Attest's wallets
+    registryV2: "0x0c6a7918e2f8c28c4bb5cf8d0f4ce27e9b30fa2a", // AttestRegistryV2: anchors made until October 12, 2026
+    stopped: "2026-11-05T18:00:00Z",
+    // Where Horizen settles on Base: its OptimismPortal, the DisputeGameFactory the portal names, and the game type
+    // whose games count (1, permissioned: only Horizen's proposer creates them).
+    portal: "0x78e794d10a355468a0e7a14aa1a9f9a253d78784",
+    factory: "0x4e2c464380fb26b0c5f9b90edf754c4e2a8d1a90",
+    gameType: 1,
+    // A source of Horizen proofs for files sealed before they carried one: each proof is checked here like a carried
+    // one, so the service is trusted for nothing but the absence of a proof.
+    archive: "https://attest.datahubz.com/api/horizen/proofs",
+  },
   authority: "0x23acbf52e76ee9502174442c87c3cd47c68f44e7",
   // Attest's platform organization: anchors every verifier build Attest has served, and the JSON-LD contexts.
   platform: "0xdea7b859dcbd34deb8dc910b5b36d6acdbec6f3a",
   webauthn: { rpId: "attest.datahubz.com", origin: "https://attest.datahubz.com" },
 };
-const REGISTRIES = [TRUST.registry, TRUST.registryV2];
-const SEL = { anchoredAt: "0xf8c2919d", registeredAt: "0xaaea3d9c", revokedAt: "0x1947aee4", isAnchored: "0x4f0b5801" };
+const CHAINS = { [TRUST.base.chainId]: TRUST.base, [TRUST.horizen.chainId]: TRUST.horizen };
+const SEL = {
+  anchoredAt: "0xf8c2919d", registeredAt: "0xaaea3d9c", revokedAt: "0x1947aee4", isAnchored: "0x4f0b5801",
+  // Base side of Horizen: portal, factory and dispute game views.
+  disputeGameFactory: "0xf2b4e617", disputeGameBlacklist: "0x45884d32", gameAtIndex: "0xbb8aa1fc",
+  rootClaim: "0xbcef3b55", l2BlockNumber: "0x8b85902b", l2ChainId: "0xd6ae3cd5", status: "0x200d2ed2",
+};
 const TOPIC = {
   anchored: "0x57fefa523db76cd62f789aa4b83143b4f3851eb48941a7d42cc380126342f404", // Anchored(uint256,address,bytes32,uint256,uint256), V3
   rootAnchored: "0x65d7864cc203711bbe6234f2bedef9f3923db5d198919a8f604fcb92aa12f7ca", // RootAnchored(uint256,address,bytes32,uint256,uint256), V2
@@ -50,8 +76,9 @@ const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&
 const mono = (s) => `<span class="mono">${esc(s)}</span>`;
 const isHex64 = (s) => typeof s === "string" && /^[0-9a-f]{64}$/.test(s);
 const isTx = (s) => typeof s === "string" && /^0x[0-9a-fA-F]{64}$/.test(s);
-// Links only ever point at the pinned explorer, built from a checked transaction hash: never a URL from a file.
-const txLink = (tx) => (isTx(tx) ? `<a href="${TRUST.explorer}/tx/${tx}" target="_blank" rel="noopener noreferrer">${mono(tx.slice(0, 10) + "…")}</a>` : "");
+// Links only ever point at the chain's pinned explorer, built from a checked transaction hash: never a URL from a file.
+// No result depends on an explorer (Horizen's may be gone).
+const txLink = (tx, chainId) => (isTx(tx) ? `<a href="${(CHAINS[chainId] || TRUST.horizen).explorer}/tx/${tx}" target="_blank" rel="noopener noreferrer">${mono(tx.slice(0, 10) + "…")}</a>` : "");
 const when = (iso) => (iso ? new Date(iso).toISOString().replace("T", " ").replace(/\.\d+Z$/, " UTC") : "");
 const fromSeconds = (s) => new Date(Number(s) * 1000).toISOString();
 const str = (v) => (typeof v === "string" ? v : "");
@@ -450,131 +477,424 @@ async function passkeyCheck(e) {
 }
 const signerPasskeyCheck = (s) => passkeyCheck({ statement: s.statement, ...s.webauthnAssertion, publicKeySpki: s.passkey.publicKeySpki, alg: s.passkey.alg });
 
-// ---- The public blockchain --------------------------------------------------------------------------
-async function rpc(url, method, params) {
-  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) });
+// ---- The public blockchains -------------------------------------------------------------------------
+async function rpc(url, method, params, timeoutMs = 15000) {
+  const signal = typeof AbortSignal !== "undefined" && AbortSignal.timeout ? AbortSignal.timeout(timeoutMs) : undefined;
+  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }), signal });
   const j = await r.json();
   if (j.error) throw new Error(j.error.message);
   return j.result;
 }
 
-// The node: Horizen's public node unless one is entered above. Either way it must be a node of Horizen; it is
-// only a source of data, every answer is checked against the pinned registries and authority.
+// A node of each chain: the one entered above, or the chain's public nodes in turn. It must answer with the chain's
+// id; it is only a source of data, every answer is checked against the pinned registries and authority.
 const nodes = new Map();
-function node() {
-  const url = $("rpc").value.trim() || TRUST.rpcs[0];
-  if (!/^https?:\/\/\S+$/i.test(url)) return Promise.reject(new Error("A node's address starts with https://"));
-  if (!nodes.has(url)) {
-    const p = rpc(url, "eth_chainId", []).then((id) => {
-      if (parseInt(id, 16) !== TRUST.chainId) throw new Error(`${url} is a node of chain ${parseInt(id, 16)}, not of ${TRUST.chain} (chain ${TRUST.chainId})`);
-      return url;
-    });
-    p.catch(() => nodes.delete(url));
-    nodes.set(url, p);
+function nodeOf(chain) {
+  const field = $(chain === TRUST.base ? "rpcBase" : "rpcHorizen");
+  const entered = field && typeof field.value === "string" ? field.value.trim() : "";
+  const urls = entered ? [entered] : chain.rpcs;
+  const key = `${chain.chainId} ${urls.join(" ")}`;
+  if (!nodes.has(key)) {
+    const p = (async () => {
+      let last = null;
+      for (const url of urls) {
+        if (!/^https?:\/\/\S+$/i.test(url)) { last = new Error("A node's address starts with https://"); continue; }
+        try {
+          const id = await rpc(url, "eth_chainId", [], 5000);
+          if (parseInt(id, 16) === chain.chainId) return url;
+          last = new Error(`${url} is a node of chain ${parseInt(id, 16)}, not of ${chain.name} (chain ${chain.chainId})`);
+        } catch (e) { last = new Error(`${url}: ${e.message}`); }
+      }
+      throw last || new Error(`No node of ${chain.name}`);
+    })();
+    p.catch(() => nodes.delete(key));
+    nodes.set(key, p);
   }
-  return nodes.get(url);
+  return nodes.get(key);
 }
 const word = (r, i) => BigInt("0x" + ((r || "0x").slice(2 + 64 * i, 2 + 64 * (i + 1)) || "0"));
 const arg = (x) => x.replace(/^0x/, "").toLowerCase().padStart(64, "0");
+const addrOf = (r, i) => `0x${(r || "0x").slice(2 + 64 * i + 24, 2 + 64 * (i + 1))}`.toLowerCase();
 const callView = (url, to, data) => rpc(url, "eth_call", [{ to, data }, "latest"]);
-
-/** An anchor of `value` on AttestRegistryV2, which records one wallet per value. */
-async function v2Anchor(url, value) {
-  const r = await callView(url, TRUST.registryV2, SEL.isAnchored + arg(value));
-  if (word(r, 0) !== 1n) return null;
-  return { at: Number(word(r, 1)), wallet: `0x${r.slice(2 + 128 + 24, 2 + 192)}`.toLowerCase(), registry: TRUST.registryV2 };
-}
-
-/** Whether a wallet is Attest's: registered by the authority on AttestRegistryV3, and when it was revoked, if ever. */
-const walletCache = new Map();
-function walletStatus(url, wallet) {
-  if (!walletCache.has(wallet)) {
-    const p = Promise.all([callView(url, TRUST.registry, SEL.registeredAt + arg(wallet)), callView(url, TRUST.registry, SEL.revokedAt + arg(wallet))]).then(([r, x]) => ({ registered: Number(word(r, 0)), revoked: Number(word(x, 0)) }));
-    p.catch(() => walletCache.delete(wallet));
-    walletCache.set(wallet, p);
-  }
-  return walletCache.get(wallet);
-}
+const isAddr = (s) => typeof s === "string" && /^0x[0-9a-f]{40}$/.test(s);
+const chainName = (id) => (CHAINS[id] ? CHAINS[id].name : `chain ${id}`);
 
 /**
- * Whether `value` is anchored by an Attest wallet. `wallet` is the wallet expected to have anchored it (named by the
- * evidence or by an earlier anchor); without one, only an anchor on V2, which records its wallet, can be found.
+ * Readers answer three questions about one chain's registries: when wallet w anchored v on AttestRegistryV3, who
+ * anchored v on AttestRegistryV2 and when, and when a wallet was registered and revoked. A reader answers undefined
+ * when it doesn't know (a proof that doesn't cover the slot), never "no".
  */
-async function attested(url, value, wallet) {
-  const v = String(value).replace(/^0x/, "").toLowerCase();
-  let w = wallet ? String(wallet).toLowerCase() : null;
-  if (w && !/^0x[0-9a-f]{40}$/.test(w)) return { anchored: false, ok: false };
+const statusCache = new Map();
+function nodeReader(chain, url) {
+  return {
+    via: "node",
+    registry: chain.registry,
+    async anchoredAt(w, v) { return Number(word(await callView(url, chain.registry, SEL.anchoredAt + arg(w) + arg(v)), 0)); },
+    async v2(v) {
+      if (!chain.registryV2) return null;
+      const r = await callView(url, chain.registryV2, SEL.isAnchored + arg(v));
+      return word(r, 0) === 1n ? { at: Number(word(r, 1)), wallet: addrOf(r, 2), registry: chain.registryV2 } : null;
+    },
+    status(w) {
+      const key = `${url} ${chain.registry} ${w}`;
+      if (!statusCache.has(key)) {
+        const p = Promise.all([callView(url, chain.registry, SEL.registeredAt + arg(w)), callView(url, chain.registry, SEL.revokedAt + arg(w))]).then(([r, x]) => ({ registered: Number(word(r, 0)), revoked: Number(word(x, 0)) }));
+        p.catch(() => statusCache.delete(key));
+        statusCache.set(key, p);
+      }
+      return statusCache.get(key);
+    },
+  };
+}
+
+/** Whether `v` is an Attest anchor by `w` (or, without `w`, an AttestRegistryV2 anchor by anyone), from one reader. */
+async function resolveWith(reader, v, w) {
   let hit = null;
   if (w) {
-    const at = Number(word(await callView(url, TRUST.registry, SEL.anchoredAt + arg(w) + arg(v)), 0));
-    if (at) hit = { at, registry: TRUST.registry };
+    const at = await reader.anchoredAt(w, v);
+    if (at) hit = { at, registry: reader.registry };
     else {
-      const old = await v2Anchor(url, v);
+      const old = await reader.v2(v);
       if (old && old.wallet === w) hit = old;
+      else if (at === undefined || old === undefined) return undefined;
     }
   } else {
-    hit = await v2Anchor(url, v);
-    if (hit) w = hit.wallet;
+    const old = await reader.v2(v);
+    if (old === undefined) return undefined;
+    if (old) { hit = old; w = old.wallet; }
   }
   if (!hit) return { anchored: false, ok: false, wallet: w };
-  const st = await walletStatus(url, w);
+  const st = await reader.status(w);
+  if (!st) return undefined;
   const ok = st.registered > 0 && (!st.revoked || hit.at < st.revoked);
   return { anchored: true, ok, at: fromSeconds(hit.at), wallet: w, registry: hit.registry, why: ok ? "" : st.registered ? "Attest revoked that wallet before this anchor" : "that wallet isn't one of Attest's" };
 }
 
-/** The wallet that sent a transaction to one of the pinned registries, and the value its log records. */
-async function anchorTx(url, txHash, value) {
-  if (!isTx(txHash)) return null;
-  const rc = await rpc(url, "eth_getTransactionReceipt", [txHash]);
-  if (!rc || rc.status !== "0x1" || !rc.to || !REGISTRIES.includes(rc.to.toLowerCase())) return null;
-  const reg = rc.to.toLowerCase(), v = "0x" + arg(value);
-  const log = rc.logs.find((l) =>
-    l.address.toLowerCase() === reg &&
-    (reg === TRUST.registry
-      ? (l.topics[0] || "").toLowerCase() === TOPIC.anchored && (l.topics[3] || "").toLowerCase() === v
-      : (l.topics[0] || "").toLowerCase() === TOPIC.rootAnchored && l.data.toLowerCase().startsWith(v)));
-  return log ? { wallet: rc.from.toLowerCase() } : null;
+// ---- Horizen's history, proven from Base -------------------------------------------------------------
+/**
+ * A Horizen proof (format attest.horizen_proof.v1): a Horizen block header, the dispute game on Base whose root claim
+ * is that block's output root, and Merkle Patricia proofs of Attest's registries' accounts and storage slots at that
+ * block. It is checked here from the header up (src/horizen-proof.mts), and the game on Base, against the pinned
+ * portal, factory and game type. Every slot is recomputed from what it is said to hold (`meaning`): a slot is never
+ * taken from the file. Returns { state: "ok" | "pending" | "bad", why, ... } with the proven values.
+ */
+const H = () => L && L.horizen;
+const proven = new WeakMap();
+function provenBundle(b) {
+  if (!b || typeof b !== "object") return Promise.resolve({ state: "bad", why: "it isn't a Horizen proof" });
+  if (!proven.has(b)) {
+    const p = checkBundle(b).catch((e) => (e && e.unknown ? Promise.reject(e) : { state: "bad", why: e.message }));
+    p.catch(() => proven.delete(b));
+    proven.set(b, p);
+  }
+  return proven.get(b);
+}
+const baseCache = new Map();
+async function baseCall(to, data) {
+  const url = await nodeOf(TRUST.base);
+  return callView(url, to, data);
+}
+/** The game on Base that settles a Horizen block: found through the pinned portal and factory, for Horizen, with this root. */
+function checkGame(index, address, blockNumber, root) {
+  const key = `${index} ${address} ${blockNumber} ${root}`;
+  if (!baseCache.has(key)) {
+    const p = (async () => {
+      const h = TRUST.horizen;
+      let reads;
+      try {
+        reads = await Promise.all([
+          baseCall(h.portal, SEL.disputeGameFactory),
+          baseCall(h.factory, SEL.gameAtIndex + arg(BigInt(index).toString(16))),
+          baseCall(address, SEL.rootClaim),
+          baseCall(address, SEL.l2BlockNumber),
+          baseCall(address, SEL.l2ChainId),
+          baseCall(address, SEL.status),
+          baseCall(h.portal, SEL.disputeGameBlacklist + arg(address)),
+        ]);
+      } catch (e) {
+        throw Object.assign(new Error(`Base couldn't be read: ${e.message}`), { unknown: true });
+      }
+      const [factory, game, claim, l2Block, l2Chain, status, blacklisted] = reads;
+      if (addrOf(factory, 0) !== h.factory) return { state: "bad", why: "Horizen's portal on Base no longer names the pinned dispute game factory" };
+      if (Number(word(game, 0)) !== h.gameType) return { state: "bad", why: `game #${index} is of type ${word(game, 0)}, not Horizen's permissioned type ${h.gameType}` };
+      if (addrOf(game, 2) !== address) return { state: "bad", why: `the factory's game #${index} is ${addrOf(game, 2)}, not ${address}` };
+      if (word(l2Chain, 0) !== BigInt(h.chainId)) return { state: "bad", why: `game #${index} is for chain ${word(l2Chain, 0)}, not Horizen` };
+      if (word(l2Block, 0) !== BigInt(blockNumber)) return { state: "bad", why: `game #${index} is for Horizen block ${word(l2Block, 0)}, not ${blockNumber}` };
+      if ("0x" + arg(claim) !== root) return { state: "bad", why: `game #${index} claims output root ${"0x" + arg(claim)}, not this block's ${root}` };
+      if (word(blacklisted, 0) !== 0n) return { state: "bad", why: `game #${index} was blacklisted by Horizen's guardian` };
+      const st = Number(word(status, 0));
+      const resolvesAt = fromSeconds(Number(word(game, 1)) + 302400);
+      if (st === 2) return { state: "ok" };
+      if (st === 0) return { state: "pending", resolvesAt };
+      return { state: "bad", why: st === 1 ? `game #${index} was won by its challenger: its output root is invalid` : `game #${index} has status ${st}` };
+    })();
+    p.catch(() => baseCache.delete(key));
+    baseCache.set(key, p);
+  }
+  return baseCache.get(key);
+}
+const MEANING = /^(anchoredAt|registeredAt|revokedAt|rootTimestamp|rootAnchorer)\[(0x[0-9a-fA-F]{40}|0x[0-9a-fA-F]{64})\](?:\[(0x[0-9a-fA-F]{64})\])?$/;
+/** The registry and slot an entry's meaning names, or null for one this verifier doesn't use. */
+function slotOf(meaning) {
+  const m = typeof meaning === "string" ? MEANING.exec(meaning) : null;
+  if (!m) return null;
+  const { keccak, mappingSlot } = H();
+  const h = TRUST.horizen, kind = m[1], a = m[2].toLowerCase(), b = m[3] ? m[3].toLowerCase() : null;
+  const isWallet = a.length === 42;
+  if (kind === "anchoredAt" && isWallet && b) return { account: h.registry, slot: mappingSlot(keccak, b, BigInt(mappingSlot(keccak, a, 1n))), kind, wallet: a, value: b };
+  if ((kind === "registeredAt" || kind === "revokedAt") && isWallet && !b) return { account: h.registry, slot: mappingSlot(keccak, a, kind === "registeredAt" ? 2n : 3n), kind, wallet: a };
+  if ((kind === "rootTimestamp" || kind === "rootAnchorer") && !isWallet && !b) return { account: h.registryV2, slot: mappingSlot(keccak, a, kind === "rootTimestamp" ? 2n : 3n), kind, value: a };
+  return null;
+}
+async function checkBundle(b) {
+  const P = H();
+  if (!P) return { state: "bad", why: "this copy of the verifier can't check Horizen proofs" };
+  const h = TRUST.horizen;
+  if (b.format !== "attest.horizen_proof.v1") return { state: "bad", why: `format ${esc(str(b.format))} isn't attest.horizen_proof.v1` };
+  if (Number(b.chainId) !== h.chainId) return { state: "bad", why: `it is a proof of chain ${esc(b.chainId)}, not of Horizen` };
+  const blk = b.block || {}, g = b.game || {};
+  const header = P.readHeader(P.keccak, P.hexToBytes(str(blk.headerRlp)));
+  if (P.bytesToHex(header.hash) !== str(blk.hash).toLowerCase()) return { state: "bad", why: "its block header doesn't hash to its block hash" };
+  if (!Number.isSafeInteger(blk.number) || header.number !== BigInt(blk.number)) return { state: "bad", why: "its block header is for another block" };
+  const root = P.bytesToHex(P.outputRoot(P.keccak, header));
+  const game = str(g.address).toLowerCase();
+  if (Number(g.chainId) !== TRUST.base.chainId || str(g.factory).toLowerCase() !== h.factory || !Number.isSafeInteger(g.index) || g.index < 0 || !isAddr(game)) return { state: "bad", why: "it names a game outside Horizen's pinned dispute game factory on Base" };
+  const values = new Map(), byTx = [];
+  for (const acc of Array.isArray(b.accounts) ? b.accounts : []) {
+    const address = str(acc && acc.address).toLowerCase();
+    if (address !== h.registry && address !== h.registryV2) return { state: "bad", why: `it proves account ${esc(address)}, not one of Attest's registries on Horizen` };
+    const account = P.verifyAccount(P.keccak, header.stateRoot, address, Array.isArray(acc.accountProof) ? acc.accountProof : []);
+    if (!account) return { state: "bad", why: `its proof shows no contract at ${address}` };
+    for (const s of Array.isArray(acc.storage) ? acc.storage : []) {
+      const at = slotOf(s && s.meaning);
+      if (!at) continue; // something this verifier never asks about
+      if (at.account !== address) return { state: "bad", why: `${esc(s.meaning)} is a slot of the other registry` };
+      if (str(s.slot).toLowerCase() !== at.slot) return { state: "bad", why: `${esc(s.meaning)} isn't at the slot the proof names` };
+      const v = P.verifyStorage(P.keccak, account.storageRoot, at.slot, Array.isArray(s.proof) ? s.proof : []);
+      if (typeof s.value !== "string" || v !== BigInt(s.value)) return { state: "bad", why: `${esc(s.meaning)}: the proof gives ${v}, not ${esc(s.value)}` };
+      values.set(`${address} ${at.slot}`, v);
+      if (isTx(s.txHash) && (at.kind === "anchoredAt" || at.kind === "rootTimestamp") && v > 0n) byTx.push({ txHash: s.txHash.toLowerCase(), ...at, at: Number(v) });
+    }
+  }
+  // A V2 anchor's entry names its value; its wallet is the proven rootAnchorer.
+  for (const e of byTx) {
+    if (e.kind !== "rootTimestamp") continue;
+    const by = values.get(`${h.registryV2} ${P.mappingSlot(P.keccak, e.value, 3n)}`);
+    e.wallet = by ? "0x" + by.toString(16).padStart(40, "0") : null;
+  }
+  const settled = await checkGame(g.index, game, blk.number, root);
+  if (settled.state === "bad") return settled;
+  return { ...settled, block: blk.number, gameIndex: g.index, values, byTx };
 }
 
-/** The wallet that sent a transaction to one of the pinned registries (for records that don't carry the value's path). */
-async function anchorTxSender(url, txHash) {
-  if (!isTx(txHash)) return null;
-  const rc = await rpc(url, "eth_getTransactionReceipt", [txHash]);
-  return rc && rc.status === "0x1" && rc.to && REGISTRIES.includes(rc.to.toLowerCase()) ? rc.from.toLowerCase() : null;
+/** A reader over a checked proof. With `archive`, a slot the proof lacks counts as empty: the service's statement. */
+function proofReader(pb, archive) {
+  const { keccak, mappingSlot } = H();
+  const h = TRUST.horizen;
+  const get = (account, slot) => {
+    const v = pb.values.get(`${account} ${slot}`);
+    return v === undefined && archive ? 0n : v;
+  };
+  return {
+    via: archive ? "archive" : "proof",
+    proven: pb,
+    registry: h.registry,
+    anchoredAt(w, v) { const x = get(h.registry, mappingSlot(keccak, "0x" + v, BigInt(mappingSlot(keccak, w, 1n)))); return x === undefined ? undefined : Number(x); },
+    v2(v) {
+      const ts = get(h.registryV2, mappingSlot(keccak, "0x" + v, 2n));
+      if (ts === undefined) return undefined;
+      if (ts === 0n) return null;
+      const by = get(h.registryV2, mappingSlot(keccak, "0x" + v, 3n));
+      return by === undefined ? undefined : { at: Number(ts), wallet: "0x" + by.toString(16).padStart(40, "0"), registry: h.registryV2 };
+    },
+    status(w) {
+      const reg = get(h.registry, mappingSlot(keccak, w, 2n)), rev = get(h.registry, mappingSlot(keccak, w, 3n));
+      return reg === undefined || rev === undefined ? undefined : { registered: Number(reg), revoked: Number(rev) };
+    },
+  };
+}
+
+// The Horizen proof the file being checked carries (set for each record), and the problems found with proofs.
+let carried = [];
+let proofProblems = new Set();
+const noteProof = (where, why) => {
+  const k = `${where}: ${why}`;
+  if (proofProblems.has(k)) return;
+  proofProblems.add(k);
+  add("warn", where === "carried" ? "The Horizen proof this file carries doesn't check out, so it wasn't used" : "A Horizen proof from Attest's archive doesn't check out, so it wasn't used", esc(why));
+};
+const archiveCache = new Map();
+/** Proofs from Attest's Horizen archive for (wallet, value) pairs and transactions: a checked proof, "none", or a throw. */
+function archiveProofs(q, t) {
+  const params = [q.length ? `q=${q.join(",")}` : "", t.length ? `t=${t.join(",")}` : ""].filter(Boolean).join("&");
+  const url = `${TRUST.horizen.archive}?${params}`;
+  if (!archiveCache.has(url)) {
+    const p = (async () => {
+      const signal = typeof AbortSignal !== "undefined" && AbortSignal.timeout ? AbortSignal.timeout(15000) : undefined;
+      const r = await fetch(url, { cache: "no-store", signal });
+      if (r.status === 404) return "none";
+      if (!r.ok) throw new Error(`Attest's Horizen archive answered ${r.status}`);
+      return provenBundle(await r.json());
+    })();
+    p.catch(() => archiveCache.delete(url));
+    archiveCache.set(url, p);
+  }
+  return archiveCache.get(url);
 }
 
 /**
- * Check that `value` is anchored by an Attest wallet, and report it. `hint.txHash` (a transaction that must record
- * it) or `hint.wallet` name the wallet; `hint.missing` is how to report an anchor that isn't there.
- * Returns { at, wallet } or null.
+ * An anchor on Horizen, which stopped on November 5, 2026: from the proof the file carries, then a Horizen node (the
+ * one entered above, or the public one while it answers), then Attest's archive of Horizen proofs. A proof whose game
+ * on Base hasn't resolved yet is used only when nothing else answers.
  */
-async function onChain(label, value, hint = {}) {
-  let url;
-  try { url = await node(); } catch (e) {
-    add("warn", `${label}: the on-chain check couldn't run here`, `${esc(e.message)}. Check your connection, or enter another public node of ${TRUST.chain} above, then drop the file again.`);
-    return null;
+async function onHorizen(v, w, ctx = {}) {
+  const chainId = TRUST.horizen.chainId;
+  let pending = null, last = null;
+  const tryReader = async (reader) => {
+    const r = await resolveWith(reader, v, w);
+    if (r === undefined) return null;
+    const out = { ...r, chainId, via: reader.via, proof: reader.proven || null };
+    if (reader.proven && reader.proven.state === "pending") { if (!pending) pending = out; return null; }
+    return out;
+  };
+  for (const b of carried) {
+    let pb;
+    try { pb = await provenBundle(b); } catch (e) { last = e; continue; }
+    if (pb.state === "bad") { noteProof("carried", pb.why); continue; }
+    const r = await tryReader(proofReader(pb, false));
+    if (r) return r;
   }
   try {
-    let wallet = hint.wallet ? String(hint.wallet).toLowerCase() : null;
-    if (hint.txHash != null) {
-      const tx = await anchorTx(url, hint.txHash, value);
-      if (!tx) { add("bad", `${label}: the transaction its evidence names doesn't anchor it on Attest's registry`, `Transaction ${mono(String(hint.txHash))}`); return null; }
-      if (wallet && wallet !== tx.wallet) { add("bad", `${label}: its evidence names a different wallet than the transaction's`, ""); return null; }
-      wallet = tx.wallet;
+    const r = await tryReader(nodeReader(TRUST.horizen, await nodeOf(TRUST.horizen)));
+    if (r) return r;
+  } catch (e) { last = e; }
+  try {
+    const pb = await archiveProofs([`${w || ""}:${v}`], isTx(ctx.txHash) ? [ctx.txHash.toLowerCase()] : []);
+    // The archive's "none" is Attest's statement: a proof found above, even one whose game is pending, outweighs it.
+    if (pb === "none") return pending || { anchored: false, ok: false, wallet: w, chainId, via: "archive" };
+    if (pb.state === "bad") noteProof("archive", pb.why);
+    else {
+      const r = await tryReader(proofReader(pb, true));
+      if (r) return r.anchored || !pending ? r : pending;
     }
-    const r = await attested(url, value, wallet);
+  } catch (e) { last = last || e; }
+  if (pending) return pending;
+  throw new Error(`Horizen stopped on November 5, 2026, and no Horizen node, proof or archive answered here${last ? ` (${last.message})` : ""}`);
+}
+
+/** The anchoring transaction's entry in a Horizen proof (carried, or from the archive): wallet, value and time. */
+async function horizenTxEntry(txHash) {
+  const tx = String(txHash).toLowerCase();
+  const sources = [...carried.map((b) => () => provenBundle(b))];
+  sources.push(() => archiveProofs([], [tx]));
+  for (const get of sources) {
+    try {
+      const pb = await get();
+      if (!pb || pb === "none" || pb.state === "bad") continue;
+      const e = pb.byTx.find((x) => x.txHash === tx);
+      if (e) return { ...e, pending: pb.state === "pending" };
+    } catch {}
+  }
+  return null;
+}
+
+async function onBase(v, w) {
+  const r = await resolveWith(nodeReader(TRUST.base, await nodeOf(TRUST.base)), v, w);
+  return { ...r, chainId: TRUST.base.chainId, via: "node" };
+}
+
+/**
+ * Whether `value` is anchored by an Attest wallet. `wallet` is the wallet expected to have anchored it (named by the
+ * evidence or by an earlier anchor); without one, only an anchor on AttestRegistryV2, which records its wallet, can be
+ * found. `chainId` names the chain when the anchor's transaction does; otherwise Base, then Horizen. The wallet's
+ * registration is read on the anchor's chain.
+ */
+async function attested(value, wallet, chainId = null, ctx = {}) {
+  const v = String(value).replace(/^0x/, "").toLowerCase();
+  const w = wallet ? String(wallet).toLowerCase() : null;
+  if ((w && !isAddr(w)) || !isHex64(v)) return { anchored: false, ok: false };
+  if (chainId === TRUST.base.chainId) return onBase(v, w);
+  if (chainId === TRUST.horizen.chainId) return onHorizen(v, w, ctx);
+  let err = null;
+  try { const r = await onBase(v, w); if (r.anchored) return r; } catch (e) { err = e; }
+  try { const r = await onHorizen(v, w, ctx); if (r.anchored || !err) return r; } catch (e) { err = err || e; }
+  throw err;
+}
+
+/**
+ * The wallet that sent a transaction to one of a chain's pinned registries and, when `value` is given, the value its
+ * log records. { wallet, read: true } from a node; on Horizen with no node, { wallet, read: false } from the proof's
+ * entry for that transaction (or the evidence's wallet). null: the transaction doesn't anchor it.
+ */
+async function txWallet(chainId, txHash, value, fallbackWallet) {
+  if (!isTx(txHash)) return null;
+  const chain = CHAINS[chainId];
+  let url = null;
+  try { url = await nodeOf(chain); } catch (e) { if (chain === TRUST.base) throw e; }
+  if (url) {
+    const rc = await rpc(url, "eth_getTransactionReceipt", [txHash]);
+    const regs = [chain.registry, chain.registryV2].filter(Boolean);
+    if (!rc || rc.status !== "0x1" || !rc.to || !regs.includes(rc.to.toLowerCase())) return null;
+    if (value == null) return { wallet: rc.from.toLowerCase(), read: true };
+    const reg = rc.to.toLowerCase(), v = "0x" + arg(value);
+    const log = rc.logs.find((l) =>
+      l.address.toLowerCase() === reg &&
+      (reg === chain.registry
+        ? (l.topics[0] || "").toLowerCase() === TOPIC.anchored && (l.topics[3] || "").toLowerCase() === v
+        : (l.topics[0] || "").toLowerCase() === TOPIC.rootAnchored && l.data.toLowerCase().startsWith(v)));
+    return log ? { wallet: rc.from.toLowerCase(), read: true } : null;
+  }
+  // Horizen without a node: the transaction itself can't be read; the anchor is proven from Horizen's state.
+  const e = await horizenTxEntry(txHash);
+  const v = value == null ? null : "0x" + arg(value);
+  if (e && (v === null || e.value === v)) return { wallet: e.wallet || null, read: false };
+  return { wallet: fallbackWallet ? String(fallbackWallet).toLowerCase() : null, read: false };
+}
+
+const viaText = (r) =>
+  r.via === "proof"
+    ? `, proven from Horizen's state at block ${r.proof.block}, whose output root Horizen's dispute game #${r.proof.gameIndex} on Base settled`
+    : r.via === "archive"
+      ? `, proven from Horizen's state at block ${r.proof.block} (a proof from Attest's archive, checked here; Horizen's dispute game #${r.proof.gameIndex} on Base settled that block)`
+      : "";
+const absentText = (r) => (r && r.via === "archive" ? " Attest's archive of Horizen, which holds a proof of every anchor Attest made there, has none for it: that absence is Attest's statement, not a proof." : "");
+
+/**
+ * Check that `value` is anchored by an Attest wallet, and report it. `hint.txHash` (a transaction that must record
+ * it, on `hint.chainId`, Horizen when none is named) or `hint.wallet` name the wallet; `hint.missing` is how to report
+ * an anchor that isn't there. Returns { at, wallet, chainId } or null.
+ */
+async function onChain(label, value, hint = {}) {
+  const named = hint.chainId == null ? null : Number(hint.chainId);
+  const txChain = hint.txHash != null ? named || TRUST.horizen.chainId : null;
+  try {
+    let wallet = hint.wallet ? String(hint.wallet).toLowerCase() : null;
+    let txRead = true;
+    if (hint.txHash != null) {
+      const tx = await txWallet(txChain, hint.txHash, value, wallet);
+      if (!tx) { add("bad", `${label}: the transaction its evidence names doesn't anchor it on Attest's registry`, `Transaction ${mono(String(hint.txHash))} on ${chainName(txChain)}`); return null; }
+      if (tx.read && wallet && wallet !== tx.wallet) { add("bad", `${label}: its evidence names a different wallet than the transaction's`, ""); return null; }
+      txRead = tx.read;
+      wallet = wallet || tx.wallet;
+    }
+    const r = await attested(value, wallet, txChain, { txHash: hint.txHash });
     if (!r.anchored) {
-      add(hint.missing || "bad", `${label}: not anchored ${hint.missing === "wait" ? "yet" : "by Attest"}`, hint.missingDetail || `Value ${mono(String(value))} isn't on Attest's registries${wallet ? ` from wallet ${mono(wallet)}` : ""}.`);
+      add(hint.missing || "bad", `${label}: not anchored ${hint.missing === "wait" ? "yet" : "by Attest"}`, (hint.missingDetail || `Value ${mono(String(value))} isn't on Attest's registries${wallet ? ` from wallet ${mono(wallet)}` : ""}.`) + absentText(r));
       return null;
     }
     if (!r.ok) {
       add("bad", `${label}: anchored by a wallet that isn't Attest's`, `Wallet ${mono(r.wallet)}: ${esc(r.why)}. Attest's wallets are registered on chain by its registry authority, ${mono(TRUST.authority)}, which this verifier pins.`);
       return null;
     }
-    add("ok", `${label}: anchored on ${TRUST.chain} by an Attest wallet`, `${when(r.at)}, by wallet ${mono(r.wallet)}${isTx(hint.txHash) ? `, transaction ${txLink(hint.txHash)}` : ""}.`);
+    const txPart = isTx(hint.txHash) ? `, transaction ${txLink(hint.txHash, r.chainId)}${txRead ? "" : " (not read: Horizen stopped on November 5, 2026)"}` : "";
+    if (r.proof && r.proof.state === "pending") {
+      add("warn", `${label}: anchored on Horizen, settled on Base after ${when(r.proof.resolvesAt)}`, `${when(r.at)}, by wallet ${mono(r.wallet)}${txPart}. Proven from Horizen's state at block ${r.proof.block}, whose output root is claimed by Horizen's dispute game #${r.proof.gameIndex} on Base: it can be challenged until it resolves, ${when(r.proof.resolvesAt)}. Check again after then.`);
+      return r;
+    }
+    add("ok", `${label}: anchored on ${chainName(r.chainId)} by an Attest wallet`, `${when(r.at)}, by wallet ${mono(r.wallet)}${txPart}${viaText(r)}.`);
     return r;
   } catch (e) {
-    add("warn", `${label}: the on-chain check couldn't run here`, `${esc(e.message)}. Check your connection, or enter another public node of ${TRUST.chain} above, then drop the file again.`);
+    add("warn", `${label}: the on-chain check couldn't run here`, `${esc(e.message)}. Check your connection, or enter another public node of Base or Horizen above, then drop the file again.`);
     return null;
   }
 }
@@ -592,14 +912,16 @@ async function foldPath(leaf, path) {
   return node;
 }
 
-/** The chain an anchor names, if any, must be Attest's. */
+/** The chain an anchor names, if any, must be one of Attest's: Base, or Horizen for anchors made before it stopped. */
 function onAttestChain(label, a) {
-  if (a && a.chainId != null && Number(a.chainId) !== TRUST.chainId) {
-    add("bad", `${label}: anchored on chain ${esc(a.chainId)}, not on ${TRUST.chain}`, "Attest anchors its records on Horizen. A record on another chain, such as a test network, isn't proof.");
+  if (a && a.chainId != null && !CHAINS[Number(a.chainId)]) {
+    add("bad", `${label}: anchored on chain ${esc(a.chainId)}, not on Base or Horizen`, "Attest anchors its records on Base, and anchored them on Horizen until November 5, 2026. A record on another chain, such as a test network, isn't proof.");
     return false;
   }
   return true;
 }
+/** The chain an anchor's transaction is on: the one it names, Horizen when it names none (every earlier record). */
+const anchorChain = (a) => (a && a.chainId != null ? Number(a.chainId) : TRUST.horizen.chainId);
 
 /**
  * An anchor from an evidence file: a receipt in a Merkle batch ({type:"merkle"}), an organization event
@@ -620,7 +942,7 @@ async function checkAnchor(label, a, expect) {
     if (a.digest && a.digest !== e) { add("bad", `${label}: the anchored event is for a different fingerprint`, ""); return null; }
     value = await sha256hex(`attest.event.v1|${a.eventId}|${e}`);
   } else value = e;
-  return onChain(label, value, { txHash: a.txHash, wallet: a.from });
+  return onChain(label, value, { txHash: a.txHash, wallet: a.from, chainId: a.chainId });
 }
 
 /** Groth16 over BN254 against the circuit's pinned verification key (src/circuits), never a key from a file. */
@@ -720,26 +1042,21 @@ function render(kind, title, sub, verified) {
  */
 const SAFE_VERIFIER = "1.4.2"; // earlier releases have weaknesses fixed since (CHANGELOG.md)
 async function checkAttachedVerifiers(list) {
-  let url;
-  try { url = await node(); } catch (e) {
-    add("warn", "The verifier attached to this file couldn't be checked here", `${esc(e.message)}. Check your connection, or enter another public node of ${TRUST.chain} above, then drop the file again.`);
-    return;
-  }
   const older = (a, b) => { const x = a.split(".").map(Number), y = b.split(".").map(Number); for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] < y[i]; return false; };
   for (const bytes of list) {
     const sha = await sha256hex(bytes);
     const m = /const VERIFIER = \{\s*version: "(\d+\.\d+\.\d+)"/.exec(latin1.decode(bytes));
     const version = m ? m[1] : "unversioned";
     let r;
-    try { r = await attested(url, await sha256hex(`attest.verifier.v1|${version}|${sha}`), TRUST.platform); } catch (e) {
-      add("warn", "The verifier attached to this file couldn't be checked here", esc(e.message));
+    try { r = await attested(await sha256hex(`attest.verifier.v1|${version}|${sha}`), TRUST.platform); } catch (e) {
+      add("warn", "The verifier attached to this file couldn't be checked here", `${esc(e.message)}. Check your connection, or enter another public node of Base or Horizen above, then drop the file again.`);
       continue;
     }
     if (!r.anchored || !r.ok) {
-      add("bad", "A file attached to this PDF isn't one Attest published", `Its SHA-256 ${mono(sha)} isn't anchored by Attest's platform wallet ${mono(TRUST.platform)}${r.anchored ? `: ${esc(r.why)}` : ""}. Don't open it: a changed verifier, or any file a reader can open, can show any result. Check files here, or with a release from ${esc(VERIFIER.repo.replace(/^https:\/\//, ""))}.`);
+      add("bad", "A file attached to this PDF isn't one Attest published", `Its SHA-256 ${mono(sha)} isn't anchored by Attest's platform wallet ${mono(TRUST.platform)}${r.anchored ? `: ${esc(r.why)}` : ""}.${absentText(r)} Don't open it: a changed verifier, or any file a reader can open, can show any result. Check files here, or with a release from ${esc(VERIFIER.repo.replace(/^https:\/\//, ""))}.`);
       continue;
     }
-    add("ok", `The verifier attached to this file is Attest's ${version === "unversioned" ? "first build" : `release ${version}`}`, `Its SHA-256 ${mono(sha)} was anchored by Attest's platform wallet ${when(r.at)}.`);
+    add("ok", `The verifier attached to this file is Attest's ${version === "unversioned" ? "first build" : `release ${version}`}`, `Its SHA-256 ${mono(sha)} was anchored by Attest's platform wallet on ${chainName(r.chainId)} ${when(r.at)}${viaText(r)}${r.proof && r.proof.state === "pending" ? `, settled on Base after ${when(r.proof.resolvesAt)}` : ""}.`);
     if (version === "unversioned" || older(version, SAFE_VERIFIER)) add("info", "That verifier has been updated since", `Later releases fix weaknesses found in it (CHANGELOG.md at ${esc(VERIFIER.repo.replace(/^https:\/\//, ""))}). Check this file here, or with the latest release, rather than with the attached copy.`);
   }
 }
@@ -861,7 +1178,9 @@ async function verifyAgreement(ev, files) {
   if (!stateSha) add("bad", "The signed state's fingerprint is missing", "");
   else if (ev.legacy) {
     if (an && onAttestChain("The signed state", an) && isTx(an.txHash)) {
-      try { wallet = await anchorTxSender(await node(), an.txHash); } catch (e) { add("warn", "The anchoring transaction couldn't be read here", esc(e.message)); }
+      let tx = null;
+      try { tx = await txWallet(anchorChain(an), an.txHash, null, null); wallet = tx && tx.wallet; } catch (e) { add("warn", "The anchoring transaction couldn't be read here", esc(e.message)); }
+      if (tx && !tx.read && wallet) add("info", "The anchoring transaction wasn't read", `Horizen stopped on November 5, 2026: its wallet ${mono(wallet)} comes from the Horizen proof of the anchor, checked below.`);
       if (!wallet) add("bad", "The anchoring transaction isn't an anchor on Attest's registry", `Transaction ${mono(an.txHash)}`);
     } else if (!an) add("wait", "The signed state isn't anchored yet", "Anchoring follows within minutes.");
   } else if (an && an.merkleRoot) {
@@ -940,6 +1259,13 @@ async function checkVisiblePages(ev, files, id, wallet) {
  * copy can't change renderer.
  */
 const RENDERER_OF_FORMAT = { 5: "attest.render.v2", 6: "attest.render.v3" };
+/** v7 (anchors on Base, and a Horizen proof) names no renderer of its own: the anchored details name v2 or v3. */
+function rendererOfEvidence(ev, format) {
+  if (format < 7) return RENDERER_OF_FORMAT[format];
+  let d = null;
+  try { d = JSON.parse(ev.details); } catch {}
+  return d && Object.values(RENDERER_OF_FORMAT).includes(d.renderer) ? d.renderer : null;
+}
 
 /**
  * Protocol v5 (agreement evidence v5 and v6): statements v3 name each signer by a salted commitment, never an email;
@@ -948,7 +1274,7 @@ const RENDERER_OF_FORMAT = { 5: "attest.render.v2", 6: "attest.render.v3" };
  * re-makes the visible pages with the renderer the details name and compares them byte for byte.
  */
 async function verifyAgreementV5(ev, files, format) {
-  const renderer = RENDERER_OF_FORMAT[format];
+  const renderer = rendererOfEvidence(ev, format);
   const id = str(ev.agreementId);
   const docSha = str(ev.document && ev.document.sha256);
   const signers = Array.isArray(ev.signers) ? ev.signers : [];
@@ -1223,15 +1549,15 @@ async function verifyCertificate(ev, files) {
   else if (!isHex64(c.pdfSha256) || typeof c.vcJwt !== "string") add("bad", "The certificate's anchor can't be checked", "Its evidence lacks the issued PDF's fingerprint or the issuer's credential, which the anchor commits to.");
   else if (key) {
     const value = await sha256hex(`attest.certificate.v1|${c.id}|${c.pdfSha256}|${await sha256hex(c.vcJwt)}`);
-    if (onAttestChain("The issued certificate", ev.anchor)) await onChain("The issued certificate", value, { txHash: ev.anchor.txHash, wallet: key.wallet });
+    if (onAttestChain("The issued certificate", ev.anchor)) await onChain("The issued certificate", value, { txHash: ev.anchor.txHash, wallet: key.wallet, chainId: ev.anchor.chainId });
   }
   // Current status, read from the chain: a revocation anchored by the issuer's wallet.
   if (key) {
     try {
-      const r = await attested(await node(), await sha256hex(`attest.certificate.revoked.v2|${c.id}`), key.wallet);
-      if (r.anchored && r.ok) add("bad", "Revoked", `Revoked on ${when(r.at)} by the issuer's wallet, read from the chain just now.`);
+      const r = await attested(await sha256hex(`attest.certificate.revoked.v2|${c.id}`), key.wallet);
+      if (r.anchored && r.ok) add("bad", "Revoked", `Revoked on ${when(r.at)} by the issuer's wallet, on ${chainName(r.chainId)}${viaText(r)}.`);
       else if (ev.revocation) add("bad", "Revoked", `On ${when(ev.revocation.revokedAt)}, per the evidence.`);
-      else add("ok", "Not revoked", "Read from the chain just now: no revocation has been anchored for this certificate.");
+      else add("ok", "Not revoked", `Read from Base just now, and from Horizen's history: no revocation has been anchored for this certificate.${absentText(r)}`);
     } catch (e) {
       if (ev.revocation) add("bad", "Revoked", `On ${when(ev.revocation.revokedAt)}, per the evidence.`);
       add("warn", "The current status couldn't be read from the chain", esc(e.message));
@@ -1348,18 +1674,18 @@ async function verifyCard(ev) {
   // each from the issuer's wallet.
   if (key && ev.status && typeof ev.status.cardId === "string") {
     try {
-      const url = await node();
-      let state = "active", changed = null;
+      let state = "active", changed = null, last = null;
       for (let n = 1; n < 200; n++) {
         let hit = null;
         for (const s of ["revoked", "suspended", "active"]) {
-          const r = await attested(url, await sha256hex(`attest.card.status.v1|${ev.status.cardId}|${n}|${s}`), key.wallet);
+          const r = await attested(await sha256hex(`attest.card.status.v1|${ev.status.cardId}|${n}|${s}`), key.wallet);
+          last = r;
           if (r.anchored && r.ok) { hit = { s, at: r.at }; break; }
         }
         if (!hit) break;
         state = hit.s; changed = hit.at;
       }
-      add(state === "active" ? "ok" : "bad", state === "active" ? "Active now" : state === "revoked" ? "Revoked" : "Suspended", `Read from the chain just now${changed ? `: last change on ${when(changed)}, by the issuer's wallet` : ": no status change has been anchored"}.`);
+      add(state === "active" ? "ok" : "bad", state === "active" ? "Active now" : state === "revoked" ? "Revoked" : "Suspended", `Read from Base just now, and from Horizen's history${changed ? `: last change on ${when(changed)}, by the issuer's wallet` : ": no status change has been anchored"}.${absentText(last)}`);
     } catch (e) { add("warn", "The current status couldn't be read from the chain", esc(e.message)); }
   }
   if (validUntil && validUntil < new Date()) add("warn", "Expired", `Valid until ${when(cred.validUntil)}.`);
@@ -1409,7 +1735,7 @@ async function verifyProof(ev) {
 }
 
 // ============================================================================================= analytics
-const FIGURE_LABELS = { newAccounts: "New accounts", sent: "Documents sent", completed: "Documents completed", signatures: "Passkey signatures", proofsShared: "Proofs shared", anchors: "Anchors on Horizen" };
+const FIGURE_LABELS = { newAccounts: "New accounts", sent: "Documents sent", completed: "Documents completed", signatures: "Passkey signatures", proofsShared: "Proofs shared", anchors: "Anchors on chain" };
 
 /** A Merkle root over leaves sorted by value: SHA-256 of sorted pairs, an odd node promoted (as Attest's trees). */
 async function rootOfLeaves(leaves) {
@@ -1481,17 +1807,48 @@ async function verifyAnalytics(ev) {
       const txs = (s.leaves.anchors || []).map((x) => "0x" + x);
       if (txs.length) {
         try {
-          const url = await node();
-          let good = 0, bad = 0;
+          const base = await nodeOf(TRUST.base);
+          let horizen = null;
+          try { horizen = await nodeOf(TRUST.horizen); } catch {}
+          const onDay = (seconds) => new Date(seconds * 1000).toISOString().slice(0, 10) === day;
+          const read = async (url, chain, tx) => {
+            const rc = await rpc(url, "eth_getTransactionReceipt", [tx]);
+            if (!rc) return null;
+            if (rc.status !== "0x1" || !rc.to || ![chain.registry, chain.registryV2].filter(Boolean).includes(rc.to.toLowerCase())) return false;
+            const block = await rpc(url, "eth_getBlockByNumber", [rc.blockNumber, false]);
+            return onDay(parseInt(block.timestamp, 16));
+          };
+          let good = 0, bad = 0, proven = 0;
+          const unread = [];
           for (const tx of txs) {
             try {
-              const rc = isTx(tx) ? await rpc(url, "eth_getTransactionReceipt", [tx]) : null;
-              if (!rc || rc.status !== "0x1" || !rc.to || !REGISTRIES.includes(rc.to.toLowerCase())) { bad++; continue; }
-              const block = await rpc(url, "eth_getBlockByNumber", [rc.blockNumber, false]);
-              if (new Date(parseInt(block.timestamp, 16) * 1000).toISOString().slice(0, 10) === day) good++; else bad++;
+              if (!isTx(tx)) { bad++; continue; }
+              let r = await read(base, TRUST.base, tx);
+              if (r === null && horizen) r = await read(horizen, TRUST.horizen, tx);
+              if (r === null && !horizen) { unread.push(tx.toLowerCase()); continue; }
+              if (r) good++; else bad++;
             } catch { bad++; }
           }
-          add(bad ? "bad" : "ok", `${label}: each committed anchor is on chain, that day`, `${good} of ${txs.length} transactions read from the chain${bad ? `; ${bad} don't check out` : ""}.`);
+          // Horizen's transactions, once its nodes are gone: the anchor each names, proven from Horizen's state (its
+          // time is the anchor's), from the proof this file carries or Attest's archive. The transaction hash itself is
+          // the archive's record, not proven.
+          let unknown = 0;
+          if (unread.length) {
+            const entries = [];
+            for (const b of carried) { try { const pb = await provenBundle(b); if (pb.state !== "bad") entries.push(...pb.byTx); } catch {} }
+            for (let i = 0; i < unread.length; i += 32) {
+              const rest = unread.slice(i, i + 32).filter((t) => !entries.some((e) => e.txHash === t));
+              if (!rest.length) continue;
+              try { const pb = await archiveProofs([], rest); if (pb !== "none" && pb.state !== "bad") entries.push(...pb.byTx); } catch {}
+            }
+            for (const tx of unread) {
+              const e = entries.find((x) => x.txHash === tx);
+              if (!e) { unknown++; continue; }
+              if (onDay(e.at)) proven++; else bad++;
+            }
+          }
+          const detail = `${good} of ${txs.length} transactions read from the chain${proven ? `; ${proven} on Horizen, proven from its state by their anchors' times (the transaction hashes are Attest's archive's record, not proven)` : ""}${bad ? `; ${bad} don't check out` : ""}${unknown ? `; ${unknown} on Horizen couldn't be checked here` : ""}.`;
+          add(bad ? "bad" : unknown ? "warn" : "ok", `${label}: each committed anchor is on chain, that day`, detail);
         } catch (e) { add("warn", `${label}: the committed anchors couldn't be read here`, esc(e.message)); }
       }
     }
@@ -1525,6 +1882,9 @@ async function verify(ev, files) {
     add("bad", "This copy of the verifier is incomplete", "Its libraries are missing. Download it again from the releases page.");
     return render(f.kind);
   }
+  // A Horizen proof the record carries (any format may): checked before any of it is used.
+  carried = ev.horizen ? [ev.horizen] : [];
+  proofProblems = new Set();
   if (files && files.verifiers && files.verifiers.length) await checkAttachedVerifiers(files.verifiers);
   if (files && files.extraPdfs) add("bad", "This file carries more than one PDF", `${files.extraPdfs} PDFs are attached: a signed copy carries one, the document exactly as signed. Don't open the others.`);
   if (files && files.inPages && files.inPages.length) add("warn", `The signed pages carry ${files.inPages.length === 1 ? "a file" : `${files.inPages.length} files`} of their own`, "They were in the document as it was signed, so a PDF reader lists them next to Attest's attachments. They aren't Attest's: don't open them as its verifier or evidence.");
@@ -1617,7 +1977,8 @@ async function handle(list) {
 }
 
 $("ver").textContent = `Version ${VERIFIER.version} · reads ${Object.keys(VERIFIER.formats).join(", ")} evidence · source and releases: github.com/DataHubz/attest-verifier ·`;
-$("rpc").placeholder = `${TRUST.rpcs[0]} (Horizen's public node)`;
+$("rpcBase").placeholder = `${TRUST.base.rpcs[0]} (Base's public node)`;
+$("rpcHorizen").placeholder = `${TRUST.horizen.rpcs[0]} (Horizen's public node, until it stopped)`;
 // Opt-in only: nothing is fetched unless this button is clicked.
 const newer = (a, b) => { const x = a.split(".").map(Number), y = b.split(".").map(Number); for (let i = 0; i < 3; i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); } return false; };
 $("update").addEventListener("click", async () => {
@@ -1629,7 +1990,7 @@ $("update").addEventListener("click", async () => {
       const l = await r.json();
       if (typeof l.version !== "string" || !/^\d+\.\d+\.\d+$/.test(l.version) || typeof l.url !== "string" || !/^https:\/\//.test(l.url)) continue;
       $("updateOut").innerHTML = newer(l.version, VERIFIER.version)
-        ? `Version ${esc(l.version)} is available: <a href="${esc(l.url)}" target="_blank" rel="noopener noreferrer">download</a> (SHA-256 ${mono(String(l.sha256).slice(0, 16) + "…")}, anchored on Horizen: check it at attest.datahubz.com/verify).`
+        ? `Version ${esc(l.version)} is available: <a href="${esc(l.url)}" target="_blank" rel="noopener noreferrer">download</a> (SHA-256 ${mono(String(l.sha256).slice(0, 16) + "…")}, anchored by Attest: check it at attest.datahubz.com/verify).`
         : "This is the latest version.";
       return;
     } catch {}
