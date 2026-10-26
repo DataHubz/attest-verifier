@@ -469,11 +469,23 @@ async function passkeyCheck(e) {
   const flags = auth[32] || 0, present = (flags & 1) !== 0, verified = (flags & 4) !== 0;
   const data = new Uint8Array(auth.length + 32); data.set(auth); data.set(await sha256(clientBytes), auth.length);
   const spki = b64(e.publicKeySpki), sig = b64url(e.signature);
+  const algOk = e.alg === -7 || e.alg === -257 || e.alg === -8;
   let sigOk = false;
   if (e.alg === -7) sigOk = await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, await crypto.subtle.importKey("spki", spki, { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]), derToRaw(sig), data);
   else if (e.alg === -257) sigOk = await crypto.subtle.verify("RSASSA-PKCS1-v1_5", await crypto.subtle.importKey("spki", spki, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]), sig, data);
   else if (e.alg === -8) sigOk = await crypto.subtle.verify({ name: "Ed25519" }, await crypto.subtle.importKey("spki", spki, { name: "Ed25519" }, false, ["verify"]), sig, data);
-  return { ok: challengeOk && originOk && rpOk && present && verified && sigOk, parts: { challengeOk, originOk, rpOk, present, verified, sigOk } };
+  return { ok: challengeOk && originOk && rpOk && present && verified && sigOk, parts: { challengeOk, originOk, rpOk, present, verified, algOk, sigOk } };
+}
+/** Why a passkey assertion failed, in words: every part that didn't hold. `who` is "signer" or "holder". */
+function passkeyWhy(parts, who = "signer") {
+  const why = [];
+  if (!parts.challengeOk) why.push("it signs a different statement than this one");
+  if (!parts.originOk) why.push(`it wasn't made on ${esc(TRUST.webauthn.origin)}`);
+  if (!parts.rpOk) why.push("it was made for another site");
+  if (!parts.present || !parts.verified) why.push(`the ${who} wasn't present and verified on their device`);
+  if (parts.algOk === false) why.push("its key type isn't one this verifier checks");
+  else if (!parts.sigOk) why.push(`the signature doesn't match the ${who}'s passkey`);
+  return why.length ? `The passkey's signature doesn't hold: ${why.join("; ")}.` : "The passkey's signature doesn't hold.";
 }
 const signerPasskeyCheck = (s) => passkeyCheck({ statement: s.statement, ...s.webauthnAssertion, publicKeySpki: s.passkey.publicKeySpki, alg: s.passkey.alg });
 
@@ -1166,7 +1178,7 @@ async function verifyAgreement(ev, files) {
     add(named ? "ok" : "bad", `${who}: the signed statement names this agreement, its document${s.entriesSha256 ? ", their entries" : ""} and this signer`, esc(str(st.statement)));
     try {
       const w = await signerPasskeyCheck(s);
-      add(w.ok ? "ok" : "bad", `${who}: passkey signature valid`, w.ok ? `Signed ${when(st.signedAt)} on ${esc(TRUST.webauthn.origin)}, with the signer present and verified on their device` : esc(JSON.stringify(w.parts)));
+      add(w.ok ? "ok" : "bad", `${who}: passkey signature valid`, w.ok ? `Signed ${when(st.signedAt)} on ${esc(TRUST.webauthn.origin)}, with the signer present and verified on their device` : passkeyWhy(w.parts));
     } catch (e) { add("bad", `${who}: passkey signature could not be checked`, esc(e.message)); }
   }
 
@@ -1352,7 +1364,7 @@ async function verifyAgreementV5(ev, files, format) {
     add(named ? "ok" : "bad", `${who}: the signed statement names this agreement, its document${s.entriesSha256 ? ", their entries and where they appear" : ""}`, `${esc(str(st.statement))}${st.encryptionKey ? " It also commits to their own encryption key." : ""} No email appears in it: the signer is named by a salted commitment.`);
     try {
       const w = await signerPasskeyCheck(s);
-      add(w.ok ? "ok" : "bad", `${who}: passkey signature valid`, w.ok ? `Signed ${when(st.signedAt)} on ${esc(TRUST.webauthn.origin)}, with the signer present and verified on their device` : esc(JSON.stringify(w.parts)));
+      add(w.ok ? "ok" : "bad", `${who}: passkey signature valid`, w.ok ? `Signed ${when(st.signedAt)} on ${esc(TRUST.webauthn.origin)}, with the signer present and verified on their device` : passkeyWhy(w.parts));
     } catch (e) { add("bad", `${who}: passkey signature could not be checked`, esc(e.message)); }
   }
 
@@ -1542,7 +1554,7 @@ async function verifyCertificate(ev, files) {
     add(st.certificate === c.id && st.contentSha256 === ch ? "ok" : "bad", `${who}: the statement names this certificate and content`, "");
     try {
       const w = await passkeyCheck({ statement: e.consentJson, authenticatorData: e.authenticatorData, clientDataJSON: e.clientDataJSON, signature: e.signature, publicKeySpki: e.publicKeySpki, alg: e.alg });
-      add(w.ok ? "ok" : "bad", `${who}: passkey signature valid`, w.ok ? `Signed on ${esc(TRUST.webauthn.origin)}, with the signer present and verified on their device` : esc(JSON.stringify(w.parts)));
+      add(w.ok ? "ok" : "bad", `${who}: passkey signature valid`, w.ok ? `Signed on ${esc(TRUST.webauthn.origin)}, with the signer present and verified on their device` : passkeyWhy(w.parts));
     } catch (err) { add("bad", `${who}: passkey signature could not be checked`, esc(err.message)); }
     if (payload) {
       const keyShas = [await sha256hex(e.publicKeySpki), await sha256hex(b64(e.publicKeySpki))];
@@ -1637,7 +1649,7 @@ async function verifyCard(ev) {
     add(names ? "ok" : "bad", "The holder approved sharing exactly this copy", `${esc(st ? str(st.statement) : "")} Disclosed copy SHA-256 ${mono(disclosed)}`);
     try {
       const w = await passkeyCheck({ statement: h.statementJson, authenticatorData: h.authenticatorData, clientDataJSON: h.clientDataJSON, signature: h.signature, publicKeySpki: h.publicKeySpki, alg: h.alg });
-      add(w.ok ? "ok" : "bad", "The holder's passkey signature is valid", w.ok ? `Approved ${when(st && st.approvedAt ? st.approvedAt : h.approvedAt)} on ${esc(TRUST.webauthn.origin)}, with the holder present and verified on their device` : esc(JSON.stringify(w.parts)));
+      add(w.ok ? "ok" : "bad", "The holder's passkey signature is valid", w.ok ? `Approved ${when(st && st.approvedAt ? st.approvedAt : h.approvedAt)} on ${esc(TRUST.webauthn.origin)}, with the holder present and verified on their device` : passkeyWhy(w.parts, "holder"));
     } catch (e) { add("bad", "The holder's passkey signature could not be checked", esc(e.message)); }
   } else add("warn", "This share has no passkey approval", "It was shared before approvals existed.");
   // The issuer's key, committed by an Attest wallet; then the issuer's signature and the signed status lists.
