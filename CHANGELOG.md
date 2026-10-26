@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.7.1 (2026-10-25)
+
+Agreement proofs made since Attest anchors on Base verify here, and a proof against a root of its own fails.
+
+- An agreement proof's record (the root it proves against) is read on the chain its evidence names. 1.7.0 read that transaction on Horizen whatever the evidence named, so every proof whose root is anchored on Base (chain 8453), as every proof made since October 24, 2026 is, failed with "the transaction its evidence names doesn't anchor it on Attest's registry". A root anchor that names no chain is read on Horizen, as before, and one that names any chain but Base or Horizen still fails..
+- A proof against a root of its own fails. Anyone can prove membership in a tree they made; a proof is Attest's only when the root it proves against is anchored by Attest. A root whose evidence names its transaction, or Horizen (which anchors nothing new), and isn't anchored there is reported as not anchored, a failed check, where 1.7.0 reported it as not anchored yet and the record as not verified yet. A root whose evidence names neither still waits, since a proof can be downloaded minutes before its root's anchor.
+- A proof's claim ("… signed an agreement, completed on …") heads the page only once every check holds, its anchor included, and settled when it is proven from Horizen. 1.7.0 showed it whenever the emails matched the proof, above a verdict that said the record didn't verify, or not yet.
+- A passkey signature that doesn't hold says why, in words (it signs a different statement than this one, it wasn't made on Attest's site, it was made for another site, the signer or holder wasn't present and verified, its key type isn't one this verifier checks, or the signature doesn't match their passkey), where 1.7.0 listed the parts of the check as JSON.
+- `npm test` checks proofs whose root is anchored by a named Base transaction, a Base transaction that anchors another root, roots of their own that name Horizen or a transaction, a root with no anchor yet, which waits and claims nothing, a root anchored on Horizen and proven from the proof it carries, one whose dispute game hasn't resolved, and a proof that reveals another date.
+
 ## 1.7.0 (2026-10-24)
 
 Attest anchors on Base, and every record it anchored on Horizen stays verifiable after Horizen stops (November 5, 2026, 18:00 UTC).
