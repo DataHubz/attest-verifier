@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <!-- Only this file's own scripts run (by hash), and nothing in a file being checked can add one. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-LhiqslUIhtHOezkreQdnBQJ0FgKI5vTudEDhdBfR/28=' 'sha256-O/m2xXOI0Vh4UpxvPIuwmJk/1CKREZj8CpuH/sG/Tv0='; style-src 'unsafe-inline'; connect-src https: http://localhost:* http://127.0.0.1:*; img-src data:; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-LhiqslUIhtHOezkreQdnBQJ0FgKI5vTudEDhdBfR/28=' 'sha256-is7Sx2qiMJAAOb9kxlMIDC9Lv/MfkMtXK26whYmoYU4='; style-src 'unsafe-inline'; connect-src https: http://localhost:* http://127.0.0.1:*; img-src data:; base-uri 'none'; form-action 'none'">
 <title>Attest verifier</title>
 <!--
   Attest standalone verifier. Open source (MIT): github.com/DataHubz/attest-verifier. Built from src/ by build.mjs;
@@ -631,7 +631,7 @@ tslib/tslib.es6.js:
 // This file's version, and the evidence formats it reads. Every release reads every earlier format, so an
 // older record verifies with any newer verifier; a record in a newer format is reported as such.
 const VERIFIER = {
-  version: "1.7.0",
+  version: "1.7.1",
   formats: { agreement: [1, 2, 3, 4, 5, 6, 7], receipt: [1, 2, 3], certificate: [1, 2, 3], card: [1, 2, 3], proof: [1, 2, 3], analytics: [1, 2, 3] },
   repo: "https://github.com/DataHubz/attest-verifier",
   latest: ["https://attest.datahubz.com/attest-verifier/latest.json", "https://raw.githubusercontent.com/DataHubz/attest-verifier/main/latest.json"],
@@ -1098,11 +1098,23 @@ async function passkeyCheck(e) {
   const flags = auth[32] || 0, present = (flags & 1) !== 0, verified = (flags & 4) !== 0;
   const data = new Uint8Array(auth.length + 32); data.set(auth); data.set(await sha256(clientBytes), auth.length);
   const spki = b64(e.publicKeySpki), sig = b64url(e.signature);
+  const algOk = e.alg === -7 || e.alg === -257 || e.alg === -8;
   let sigOk = false;
   if (e.alg === -7) sigOk = await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, await crypto.subtle.importKey("spki", spki, { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]), derToRaw(sig), data);
   else if (e.alg === -257) sigOk = await crypto.subtle.verify("RSASSA-PKCS1-v1_5", await crypto.subtle.importKey("spki", spki, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]), sig, data);
   else if (e.alg === -8) sigOk = await crypto.subtle.verify({ name: "Ed25519" }, await crypto.subtle.importKey("spki", spki, { name: "Ed25519" }, false, ["verify"]), sig, data);
-  return { ok: challengeOk && originOk && rpOk && present && verified && sigOk, parts: { challengeOk, originOk, rpOk, present, verified, sigOk } };
+  return { ok: challengeOk && originOk && rpOk && present && verified && sigOk, parts: { challengeOk, originOk, rpOk, present, verified, algOk, sigOk } };
+}
+/** Why a passkey assertion failed, in words: every part that didn't hold. `who` is "signer" or "holder". */
+function passkeyWhy(parts, who = "signer") {
+  const why = [];
+  if (!parts.challengeOk) why.push("it signs a different statement than this one");
+  if (!parts.originOk) why.push(`it wasn't made on ${esc(TRUST.webauthn.origin)}`);
+  if (!parts.rpOk) why.push("it was made for another site");
+  if (!parts.present || !parts.verified) why.push(`the ${who} wasn't present and verified on their device`);
+  if (parts.algOk === false) why.push("its key type isn't one this verifier checks");
+  else if (!parts.sigOk) why.push(`the signature doesn't match the ${who}'s passkey`);
+  return why.length ? `The passkey's signature doesn't hold: ${why.join("; ")}.` : "The passkey's signature doesn't hold.";
 }
 const signerPasskeyCheck = (s) => passkeyCheck({ statement: s.statement, ...s.webauthnAssertion, publicKeySpki: s.passkey.publicKeySpki, alg: s.passkey.alg });
 
@@ -1795,7 +1807,7 @@ async function verifyAgreement(ev, files) {
     add(named ? "ok" : "bad", `${who}: the signed statement names this agreement, its document${s.entriesSha256 ? ", their entries" : ""} and this signer`, esc(str(st.statement)));
     try {
       const w = await signerPasskeyCheck(s);
-      add(w.ok ? "ok" : "bad", `${who}: passkey signature valid`, w.ok ? `Signed ${when(st.signedAt)} on ${esc(TRUST.webauthn.origin)}, with the signer present and verified on their device` : esc(JSON.stringify(w.parts)));
+      add(w.ok ? "ok" : "bad", `${who}: passkey signature valid`, w.ok ? `Signed ${when(st.signedAt)} on ${esc(TRUST.webauthn.origin)}, with the signer present and verified on their device` : passkeyWhy(w.parts));
     } catch (e) { add("bad", `${who}: passkey signature could not be checked`, esc(e.message)); }
   }
 
@@ -1981,7 +1993,7 @@ async function verifyAgreementV5(ev, files, format) {
     add(named ? "ok" : "bad", `${who}: the signed statement names this agreement, its document${s.entriesSha256 ? ", their entries and where they appear" : ""}`, `${esc(str(st.statement))}${st.encryptionKey ? " It also commits to their own encryption key." : ""} No email appears in it: the signer is named by a salted commitment.`);
     try {
       const w = await signerPasskeyCheck(s);
-      add(w.ok ? "ok" : "bad", `${who}: passkey signature valid`, w.ok ? `Signed ${when(st.signedAt)} on ${esc(TRUST.webauthn.origin)}, with the signer present and verified on their device` : esc(JSON.stringify(w.parts)));
+      add(w.ok ? "ok" : "bad", `${who}: passkey signature valid`, w.ok ? `Signed ${when(st.signedAt)} on ${esc(TRUST.webauthn.origin)}, with the signer present and verified on their device` : passkeyWhy(w.parts));
     } catch (e) { add("bad", `${who}: passkey signature could not be checked`, esc(e.message)); }
   }
 
@@ -2171,7 +2183,7 @@ async function verifyCertificate(ev, files) {
     add(st.certificate === c.id && st.contentSha256 === ch ? "ok" : "bad", `${who}: the statement names this certificate and content`, "");
     try {
       const w = await passkeyCheck({ statement: e.consentJson, authenticatorData: e.authenticatorData, clientDataJSON: e.clientDataJSON, signature: e.signature, publicKeySpki: e.publicKeySpki, alg: e.alg });
-      add(w.ok ? "ok" : "bad", `${who}: passkey signature valid`, w.ok ? `Signed on ${esc(TRUST.webauthn.origin)}, with the signer present and verified on their device` : esc(JSON.stringify(w.parts)));
+      add(w.ok ? "ok" : "bad", `${who}: passkey signature valid`, w.ok ? `Signed on ${esc(TRUST.webauthn.origin)}, with the signer present and verified on their device` : passkeyWhy(w.parts));
     } catch (err) { add("bad", `${who}: passkey signature could not be checked`, esc(err.message)); }
     if (payload) {
       const keyShas = [await sha256hex(e.publicKeySpki), await sha256hex(b64(e.publicKeySpki))];
@@ -2266,7 +2278,7 @@ async function verifyCard(ev) {
     add(names ? "ok" : "bad", "The holder approved sharing exactly this copy", `${esc(st ? str(st.statement) : "")} Disclosed copy SHA-256 ${mono(disclosed)}`);
     try {
       const w = await passkeyCheck({ statement: h.statementJson, authenticatorData: h.authenticatorData, clientDataJSON: h.clientDataJSON, signature: h.signature, publicKeySpki: h.publicKeySpki, alg: h.alg });
-      add(w.ok ? "ok" : "bad", "The holder's passkey signature is valid", w.ok ? `Approved ${when(st && st.approvedAt ? st.approvedAt : h.approvedAt)} on ${esc(TRUST.webauthn.origin)}, with the holder present and verified on their device` : esc(JSON.stringify(w.parts)));
+      add(w.ok ? "ok" : "bad", "The holder's passkey signature is valid", w.ok ? `Approved ${when(st && st.approvedAt ? st.approvedAt : h.approvedAt)} on ${esc(TRUST.webauthn.origin)}, with the holder present and verified on their device` : passkeyWhy(w.parts, "holder"));
     } catch (e) { add("bad", "The holder's passkey signature could not be checked", esc(e.message)); }
   } else add("warn", "This share has no passkey approval", "It was shared before approvals existed.");
   // The issuer's key, committed by an Attest wallet; then the issuer's signature and the signed status lists.
@@ -2355,16 +2367,26 @@ async function checkAgreementProof(p, root, label) {
   add(partyOk && counterOk ? "ok" : "bad", `${label}: it is about ${esc(withParty ? `${party} and ${counterparty}` : party || "nobody named")}`, "Each email's field element, sha256(email) mod p, matches the proof's public input.");
   const daySig = sig[withParty ? 3 : 2];
   const date = daySig != null ? new Date(Number(daySig) * 86400000).toISOString().slice(0, 10) : null;
-  add(date && (!r.dateISO || r.dateISO === date) ? "ok" : "bad", `${label}: completed on ${date || "no date"}`, "The completion day is a public input of the proof.");
-  if (sig[withParty ? 4 : 3] !== (await fieldOf("attest.identity.v1"))) add("bad", `${label}: unexpected identity salt`, "");
+  const dateOk = Boolean(date && (!r.dateISO || r.dateISO === date));
+  add(dateOk ? "ok" : "bad", `${label}: completed on ${date || "no date"}`, "The completion day is a public input of the proof.");
+  const saltOk = sig[withParty ? 4 : 3] === (await fieldOf("attest.identity.v1"));
+  if (!saltOk) add("bad", `${label}: unexpected identity salt`, "");
   const rootHex = BigInt(sig[0] || "0").toString(16).padStart(64, "0");
-  if (root && root.value && String(root.value).replace(/^0x/, "").toLowerCase() !== rootHex) add("bad", `${label}: proven against a different root than the evidence names`, "");
+  const rootOk = !(root && root.value && String(root.value).replace(/^0x/, "").toLowerCase() !== rootHex);
+  if (!rootOk) add("bad", `${label}: proven against a different root than the evidence names`, "");
   const ra = (root && root.anchor) || {};
+  // Anyone can prove membership in a tree of their own: only the anchor makes the root Attest's. A root that names its
+  // transaction, or Horizen (which anchors nothing new), and isn't anchored never will be; one that names neither may
+  // be minutes from its anchor.
+  const settled = ra.txHash != null || (ra.chainId != null && Number(ra.chainId) === TRUST.horizen.chainId);
+  let anchored = null;
   if (onAttestChain(`${label}: the record it proves against`, ra)) {
-    await onChain(`${label}: the record it proves against`, rootHex, { wallet: ra.from, txHash: ra.txHash, missing: "wait", missingDetail: `Root ${mono("0x" + rootHex)}. It commits to every completed agreement on Attest; anchoring follows within minutes.` });
+    anchored = await onChain(`${label}: the record it proves against`, rootHex, { wallet: ra.from, txHash: ra.txHash, chainId: ra.chainId, missing: settled ? "bad" : "wait", missingDetail: settled ? `Root ${mono("0x" + rootHex)} isn't anchored where its evidence says. A proof is Attest's only when the root it proves against is: anyone can prove membership in a tree of their own.` : `Root ${mono("0x" + rootHex)}. It commits to every completed agreement on Attest; anchoring follows within minutes.` });
   }
   if (p.zkverify && isTx(p.zkverify.txHash)) add("info", `${label}: also verified on zkVerify`, mono(p.zkverify.txHash));
-  return partyOk && counterOk ? (withParty ? `${party} and ${counterparty} signed an agreement, completed on ${date}.` : `${party} signed an agreement, completed on ${date}.`) : null;
+  // The claim heads the page only once every check holds, the anchor included (settled, if it is proven from Horizen).
+  const settledAnchor = anchored && !(anchored.proof && anchored.proof.state === "pending");
+  return partyOk && counterOk && dateOk && saltOk && rootOk && settledAnchor ? (withParty ? `${party} and ${counterparty} signed an agreement, completed on ${date}.` : `${party} signed an agreement, completed on ${date}.`) : null;
 }
 
 async function verifyProof(ev) {
