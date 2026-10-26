@@ -1726,16 +1726,26 @@ async function checkAgreementProof(p, root, label) {
   add(partyOk && counterOk ? "ok" : "bad", `${label}: it is about ${esc(withParty ? `${party} and ${counterparty}` : party || "nobody named")}`, "Each email's field element, sha256(email) mod p, matches the proof's public input.");
   const daySig = sig[withParty ? 3 : 2];
   const date = daySig != null ? new Date(Number(daySig) * 86400000).toISOString().slice(0, 10) : null;
-  add(date && (!r.dateISO || r.dateISO === date) ? "ok" : "bad", `${label}: completed on ${date || "no date"}`, "The completion day is a public input of the proof.");
-  if (sig[withParty ? 4 : 3] !== (await fieldOf("attest.identity.v1"))) add("bad", `${label}: unexpected identity salt`, "");
+  const dateOk = Boolean(date && (!r.dateISO || r.dateISO === date));
+  add(dateOk ? "ok" : "bad", `${label}: completed on ${date || "no date"}`, "The completion day is a public input of the proof.");
+  const saltOk = sig[withParty ? 4 : 3] === (await fieldOf("attest.identity.v1"));
+  if (!saltOk) add("bad", `${label}: unexpected identity salt`, "");
   const rootHex = BigInt(sig[0] || "0").toString(16).padStart(64, "0");
-  if (root && root.value && String(root.value).replace(/^0x/, "").toLowerCase() !== rootHex) add("bad", `${label}: proven against a different root than the evidence names`, "");
+  const rootOk = !(root && root.value && String(root.value).replace(/^0x/, "").toLowerCase() !== rootHex);
+  if (!rootOk) add("bad", `${label}: proven against a different root than the evidence names`, "");
   const ra = (root && root.anchor) || {};
+  // Anyone can prove membership in a tree of their own: only the anchor makes the root Attest's. A root that names its
+  // transaction, or Horizen (which anchors nothing new), and isn't anchored never will be; one that names neither may
+  // be minutes from its anchor.
+  const settled = ra.txHash != null || (ra.chainId != null && Number(ra.chainId) === TRUST.horizen.chainId);
+  let anchored = null;
   if (onAttestChain(`${label}: the record it proves against`, ra)) {
-    await onChain(`${label}: the record it proves against`, rootHex, { wallet: ra.from, txHash: ra.txHash, missing: "wait", missingDetail: `Root ${mono("0x" + rootHex)}. It commits to every completed agreement on Attest; anchoring follows within minutes.` });
+    anchored = await onChain(`${label}: the record it proves against`, rootHex, { wallet: ra.from, txHash: ra.txHash, chainId: ra.chainId, missing: settled ? "bad" : "wait", missingDetail: settled ? `Root ${mono("0x" + rootHex)} isn't anchored where its evidence says. A proof is Attest's only when the root it proves against is: anyone can prove membership in a tree of their own.` : `Root ${mono("0x" + rootHex)}. It commits to every completed agreement on Attest; anchoring follows within minutes.` });
   }
   if (p.zkverify && isTx(p.zkverify.txHash)) add("info", `${label}: also verified on zkVerify`, mono(p.zkverify.txHash));
-  return partyOk && counterOk ? (withParty ? `${party} and ${counterparty} signed an agreement, completed on ${date}.` : `${party} signed an agreement, completed on ${date}.`) : null;
+  // The claim heads the page only once every check holds, the anchor included (settled, if it is proven from Horizen).
+  const settledAnchor = anchored && !(anchored.proof && anchored.proof.state === "pending");
+  return partyOk && counterOk && dateOk && saltOk && rootOk && settledAnchor ? (withParty ? `${party} and ${counterparty} signed an agreement, completed on ${date}.` : `${party} signed an agreement, completed on ${date}.`) : null;
 }
 
 async function verifyProof(ev) {

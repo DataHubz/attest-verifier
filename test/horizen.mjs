@@ -23,7 +23,7 @@ const GAME = fx.bundle.game.address.toLowerCase();
 // Base as the mocks answer it; each case changes what it needs.
 let base, archive, horizenUp;
 const reset = () => {
-  base = { factory: FACTORY, gameType: 1, createdAt: fx.game.createdAt, proxy: GAME, rootClaim: fx.game.rootClaim, l2Block: fx.bundle.block.number, l2Chain: 26514, status: 2, blacklisted: 0, anchors: {}, registered: {} };
+  base = { factory: FACTORY, gameType: 1, createdAt: fx.game.createdAt, proxy: GAME, rootClaim: fx.game.rootClaim, l2Block: fx.bundle.block.number, l2Chain: 26514, status: 2, blacklisted: 0, anchors: {}, registered: {}, receipts: {} };
   archive = { status: 404, body: null, asked: [] };
   horizenUp = false;
 };
@@ -61,6 +61,7 @@ async function fetchMock(url, init) {
   if (url === "https://mainnet.base.org") {
     if (body.method === "eth_chainId") return result("0x2105");
     if (body.method === "eth_call") return result(baseCall(body.params[0].to.toLowerCase(), body.params[0].data.toLowerCase()));
+    if (body.method === "eth_getTransactionReceipt") return result(base.receipts[body.params[0].toLowerCase()] || null);
     return result(null);
   }
   throw new TypeError(`unexpected fetch ${url}`);
@@ -124,6 +125,76 @@ await test("a Base anchor is read from Base, with the wallet's registration on B
   await fresh([]);
   const r = await attestedOn(fx.v3.value, fx.v3.wallet, null);
   assert(r.anchored && r.ok && r.chainId === 8453 && r.via === "node", JSON.stringify(r));
+});
+
+// Agreement proofs: Groth16 is stubbed (restored after each case), the rest is the verifier's own code.
+const proofCase = async (anchor, root = "1e".repeat(32), dateISO = "2026-10-25") => run(
+  `const real = groth16;
+   groth16 = async () => true;
+   try {
+     const sig = [BigInt("0x" + input.root).toString(), await fieldOf("a@example.com"), await fieldOf("b@example.com"), "20751", await fieldOf("attest.identity.v1")];
+     const said = await checkAgreementProof({ circuit: "agreement_with_party", publicSignals: sig, proof: {}, revealed: { party: "a@example.com", counterparty: "b@example.com", dateISO: input.dateISO } }, { value: "0x" + input.root, anchor: input.anchor }, "The proof");
+     return { said, results };
+   } finally { groth16 = real; }`,
+  { root, anchor, dateISO },
+);
+const baseAnchor = async (tx, wallet, root, logged = root) => {
+  base.anchors[`${wallet} ${root}`] = 1793000000;
+  base.registered[wallet] = 1792900000;
+  const topic = await run("return TOPIC.anchored;");
+  base.receipts[tx] = { status: "0x1", to: BASE_REGISTRY, from: wallet, logs: [{ address: BASE_REGISTRY, topics: [topic, "0x" + A(wallet), "0x" + W(1), "0x" + logged], data: "0x" }] };
+};
+const record = (r) => r.results.find((x) => /the record it proves against/.test(x.title));
+
+await test("an agreement proof's record, anchored by a named Base transaction, is read on Base", async () => {
+  const tx = "0x" + "37".repeat(32), root = "1e".repeat(32);
+  await baseAnchor(tx, fx.v3.wallet, root);
+  await fresh([]);
+  const r = await proofCase({ chainId: 8453, txHash: tx, from: fx.v3.wallet }, root);
+  assert(record(r)?.state === "ok" && /on Base/.test(record(r).title) && !r.results.some((x) => x.state === "bad"), JSON.stringify(r.results));
+  assert(r.said === "a@example.com and b@example.com signed an agreement, completed on 2026-10-25.", JSON.stringify(r.said));
+});
+
+await test("an agreement proof whose named Base transaction anchors another root fails, and claims nothing", async () => {
+  const tx = "0x" + "38".repeat(32), root = "1e".repeat(32);
+  await baseAnchor(tx, fx.v3.wallet, root, "2f".repeat(32));
+  await fresh([]);
+  const r = await proofCase({ chainId: 8453, txHash: tx, from: fx.v3.wallet }, root);
+  assert(record(r)?.state === "bad" && r.said === null, JSON.stringify(r.results));
+});
+
+await test("an agreement proof against a root of its own, naming Horizen or a transaction, fails rather than waits, and claims nothing", async () => {
+  for (const anchor of [{ chainId: 26514, from: fx.v3.wallet }, { chainId: 26514, txHash: "0x" + "39".repeat(32), from: fx.v3.wallet }, { chainId: 8453, txHash: "0x" + "3a".repeat(32), from: fx.v3.wallet }]) {
+    await fresh([]);
+    const r = await proofCase(anchor, "4d".repeat(32));
+    assert(r.results.some((x) => x.state === "bad") && !r.results.some((x) => x.state === "wait") && r.said === null, JSON.stringify(r.results));
+  }
+});
+
+await test("an agreement proof whose root is anchored on Horizen, proven from the proof it carries, verifies and claims", async () => {
+  await fresh([clone()]);
+  const r = await proofCase({ chainId: 26514, txHash: fx.v3.txHash, from: fx.v3.wallet }, fx.v3.value.slice(2));
+  assert(record(r)?.state === "ok" && !r.results.some((x) => x.state === "bad" || x.state === "warn"), JSON.stringify(r.results));
+  assert(r.said === "a@example.com and b@example.com signed an agreement, completed on 2026-10-25.", JSON.stringify(r.said));
+});
+
+await test("an agreement proof whose Horizen anchor waits on an unresolved game claims nothing yet", async () => {
+  base.status = 0;
+  await fresh([clone()]);
+  const r = await proofCase({ chainId: 26514, txHash: fx.v3.txHash, from: fx.v3.wallet }, fx.v3.value.slice(2));
+  assert(record(r)?.state === "warn" && r.said === null, JSON.stringify(r.results));
+});
+
+await test("an agreement proof that reveals another date fails, and claims nothing", async () => {
+  await fresh([clone()]);
+  const r = await proofCase({ chainId: 26514, txHash: fx.v3.txHash, from: fx.v3.wallet }, fx.v3.value.slice(2), "2026-09-25");
+  assert(r.results.some((x) => x.state === "bad" && /completed on/.test(x.title)) && r.said === null, JSON.stringify(r.results));
+});
+
+await test("an agreement proof whose root names no anchor yet waits, and claims nothing until it is anchored", async () => {
+  await fresh([]);
+  const r = await proofCase(null, "4d".repeat(32));
+  assert(record(r)?.state === "wait" && r.said === null, JSON.stringify(r.results));
 });
 
 await test("an anchor named by its Horizen transaction verifies with Horizen stopped, and says the transaction wasn't read", async () => {
